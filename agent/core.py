@@ -166,7 +166,12 @@ class AgentCore:
             self.memory.add_message(session_id, "agent", answer["answer"])
             return answer
 
-        enhanced_context = schema_summary
+        # Find only relevant tables for this question (faster + better for large DBs)
+        relevant_schema = self.schema_analyzer.find_relevant_tables(question)
+        if not relevant_schema:
+            relevant_schema = schema_summary  # fallback to compact summary
+
+        enhanced_context = relevant_schema
         if conversation_context:
             enhanced_context += f"\n\n{conversation_context}"
         if workflow_context:
@@ -179,7 +184,7 @@ class AgentCore:
 
         intent = self.intent_classifier.classify(question, enhanced_context)
 
-        query_info = self.query_generator.generate(intent, schema_summary)
+        query_info = self.query_generator.generate(intent, relevant_schema)
 
         if query_info.get("error") or not query_info.get("sql"):
             answer = {

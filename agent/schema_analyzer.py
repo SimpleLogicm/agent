@@ -27,32 +27,64 @@ class SchemaAnalyzer:
         lines = []
         for table_name, table_info in schema.items():
             cols = table_info.get("columns", [])
-            col_strs = []
-            for c in cols:
-                pk = " [PK]" if c.get("primary_key") else ""
-                col_strs.append(f"  - {c['name']} ({c['type']}{pk})")
-
-            fks = table_info.get("foreign_keys", [])
-            fk_strs = []
-            for fk in fks:
-                fk_strs.append(
-                    f"  FK: {', '.join(fk['columns'])} -> {fk['referred_table']}({', '.join(fk['referred_columns'])})"
-                )
-
+            col_names = [c['name'] for c in cols]
             row_count = table_info.get("row_count", "?")
-            lines.append(f"Table: {table_name} ({row_count} rows)")
-            lines.extend(col_strs)
-            if fk_strs:
-                lines.extend(fk_strs)
-
-            if sample_data and table_name in sample_data:
-                samples = sample_data[table_name]
-                if samples:
-                    lines.append(f"  Sample: {samples[0]}")
-
-            lines.append("")
+            lines.append(f"{table_name} ({row_count} rows): {', '.join(col_names)}")
 
         return "\n".join(lines)
+
+    def get_table_detail(self, table_name: str) -> str:
+        """Get detailed schema for specific tables (used when answering questions)."""
+        if table_name not in self.schema:
+            return ""
+        table_info = self.schema[table_name]
+        lines = [f"Table: {table_name}"]
+        for c in table_info.get("columns", []):
+            pk = " [PK]" if c.get("primary_key") else ""
+            lines.append(f"  - {c['name']} ({c['type']}{pk})")
+        for fk in table_info.get("foreign_keys", []):
+            lines.append(f"  FK: {', '.join(fk['columns'])} -> {fk['referred_table']}({', '.join(fk['referred_columns'])})")
+        return "\n".join(lines)
+
+    def find_relevant_tables(self, question: str, max_tables: int = 15) -> str:
+        """Find tables relevant to a question and return their detailed schema."""
+        q_lower = question.lower()
+        scored = []
+        for table_name in self.schema:
+            score = 0
+            t_lower = table_name.lower().replace("_", " ")
+            # Check if any word in question matches table name
+            for word in q_lower.split():
+                if len(word) > 2 and word in t_lower:
+                    score += 10
+            # Check column names
+            for col in self.schema[table_name].get("columns", []):
+                col_lower = col["name"].lower().replace("_", " ")
+                for word in q_lower.split():
+                    if len(word) > 2 and word in col_lower:
+                        score += 5
+            # Boost tables with more rows (likely important)
+            row_count = self.schema[table_name].get("row_count", 0)
+            if row_count > 100:
+                score += 2
+            if row_count > 1000:
+                score += 3
+            if score > 0:
+                scored.append((table_name, score))
+
+        # Sort by relevance
+        scored.sort(key=lambda x: x[1], reverse=True)
+        relevant = [t[0] for t in scored[:max_tables]]
+
+        # If no match found, return top tables by row count
+        if not relevant:
+            by_rows = sorted(self.schema.items(), key=lambda x: x[1].get("row_count", 0), reverse=True)
+            relevant = [t[0] for t in by_rows[:max_tables]]
+
+        details = []
+        for t in relevant:
+            details.append(self.get_table_detail(t))
+        return "\n\n".join(details)
 
     def _detect_domain(self, schema: dict) -> str:
         table_names = [t.lower() for t in schema.keys()]
