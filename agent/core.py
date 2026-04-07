@@ -151,12 +151,25 @@ class AgentCore:
         facts_context = self.memory.get_facts_context()
 
         q_lower = question.lower().strip()
-        if q_lower in ("describe", "describe database", "what is this database", "show schema", "show tables", "what tables do i have"):
-            llm_analysis = self.schema_analyzer.get_llm_analysis()
+        tables_list = self.analysis.get("tables", [])
+        total_tables = len(tables_list)
+
+        # ─── Instant responses (no LLM needed) ───
+        greetings = {"hi", "hello", "hey", "hii", "hiii", "yo", "sup", "good morning", "good evening", "good afternoon"}
+        if q_lower in greetings or q_lower.rstrip("!") in greetings:
             answer = {
-                "answer": llm_analysis,
-                "suggestions": self.analysis.get("available_actions", [])[:5],
-                "data": {"tables": self.analysis["tables"], "domain": self.analysis["domain"]},
+                "answer": f"Hello! I'm connected to your {self.analysis.get('domain', 'unknown')} database with {total_tables} tables. Ask me anything about your data!",
+                "suggestions": [f"Show all tables", f"Count records in {tables_list[0]}" if tables_list else "Show schema", "What can you do?"],
+                "data": None,
+            }
+            self.memory.add_message(session_id, "agent", answer["answer"])
+            return answer
+
+        if q_lower in ("describe", "describe database", "what is this database", "show schema", "show tables", "what tables do i have", "tables", "list tables"):
+            answer = {
+                "answer": f"Your database has {total_tables} tables. Domain: {self.analysis.get('domain', 'unknown')}.\n\nTables: {', '.join(tables_list[:30])}" + (f"\n... and {total_tables - 30} more" if total_tables > 30 else ""),
+                "suggestions": [f"Show data from {tables_list[0]}" if tables_list else "Describe database"],
+                "data": {"tables": tables_list, "domain": self.analysis.get("domain")},
             }
             self.memory.add_message(session_id, "agent", answer["answer"])
             return answer
