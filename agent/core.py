@@ -1,5 +1,9 @@
 import uuid
+import time
+import logging
 from typing import Optional, Dict, Any
+
+logger = logging.getLogger("agent")
 from connectors.base import BaseConnector
 from connectors.postgres import PostgresConnector
 from connectors.sqlite import SQLiteConnector
@@ -170,38 +174,81 @@ class AgentCore:
             self.memory.add_message(session_id, "agent", answer["answer"])
             return answer
 
-        # Find only relevant tables for this question (faster + better for large DBs)
-        relevant_schema = self.schema_analyzer.find_relevant_tables(question)
+        # Find only relevant tables for this question
+        t0 = time.time()
+        relevant_schema = self.schema_analyzer.find_relevant_tables(question, max_tables=10)
         if not relevant_schema:
-            relevant_schema = schema_summary  # fallback to compact summary
+            relevant_schema = schema_summary[:2000]
+        logger.info(f"  [1] Find tables: {round(time.time()-t0, 1)}s")
 
-        enhanced_context = relevant_schema
-        if conversation_context:
-            enhanced_context += f"\n\n{conversation_context}"
-        if workflow_context:
-            enhanced_context += f"\n\n{workflow_context}"
-        if facts_context:
-            enhanced_context += f"\n\n{facts_context}"
+        # SINGLE LLM call - generate SQL directly (skip intent + response builder)
+        t0 = time.time()
+        import json as _json
+        import ollama as _ollama
+        fast_prompt = f"""You are a database assistant. Given the schema and question, generate a SQL query and a short answer.
 
-        if self.api_connector.is_connected:
-            enhanced_context += f"\n\nAvailable API:\n{self.api_connector.get_endpoints_summary()}"
+Schema:
+{relevant_schema[:2500]}
 
-        intent = self.intent_classifier.classify(question, enhanced_context)
+Question: "{question}"
 
-        query_info = self.query_generator.generate(intent, relevant_schema)
+Respond ONLY with valid JSON:
+{{"sql": "SELECT ...", "answer": "short natural language answer", "suggestions": ["suggestion1", "suggestion2"]}}
 
-        if query_info.get("error") or not query_info.get("sql"):
-            answer = {
-                "answer": f"I understood your question but couldn't generate a query. {query_info.get('error', '')}",
-                "suggestions": ["Try rephrasing", "Ask 'what tables do I have?' to see available data"],
-                "data": None,
-            }
-            self.memory.add_message(session_id, "agent", answer["answer"])
-            return answer
+Rules:
+- Generate valid PostgreSQL SQL
+- Use LIMIT 20
+- If question is greeting (hi/hello), respond with: {{"sql": "", "answer": "Hello! I'm connected to your database. Ask me anything about your data.", "suggestions": ["Show all tables", "Count records"]}}"""
 
-        query_result = self.action_engine.execute(query_info)
+        try:
+            llm_resp = _ollama.chat(
+                model=settings.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": fast_prompt}],
+                options={"temperature": 0.1},
+            )
+            raw = llm_resp["message"]["content"].strip()
+            logger.info(f"  [2] LLM response: {round(time.time()-t0, 1)}s")
 
-        response = self.response_builder.build(question, intent, query_result, enhanced_context)
+            # Parse JSON from LLM
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            start_idx = raw.find("{")
+            end_idx = raw.rfind("}") + 1
+            if start_idx != -1 and end_idx > start_idx:
+                parsed = _json.loads(raw[start_idx:end_idx])
+            else:
+                parsed = {"sql": "", "answer": raw, "suggestions": []}
+        except Exception as e:
+            logger.error(f"  LLM error: {e}")
+            parsed = {"sql": "", "answer": f"Error processing your question: {e}", "suggestions": []}
+
+        sql = parsed.get("sql", "")
+        answer_text = parsed.get("answer", "")
+        suggestions = parsed.get("suggestions", [])
+
+        # Execute SQL if generated
+        query_result = None
+        if sql and sql.strip().upper().startswith("SELECT"):
+            t0 = time.time()
+            query_info = {"sql": sql, "params": {}}
+            query_result = self.action_engine.execute(query_info)
+            logger.info(f"  [3] DB execute: {round(time.time()-t0, 1)}s → {query_result.get('row_count', 0)} rows")
+
+            if query_result.get("success") and query_result.get("rows"):
+                rows = query_result["rows"]
+                if not answer_text or answer_text == "short natural language answer":
+                    answer_text = f"Found {len(rows)} results."
+        elif sql:
+            query_info = {"sql": sql, "params": {}}
+            query_result = self.action_engine.execute(query_info)
+
+        response = {
+            "answer": answer_text or "I processed your question but couldn't generate a response.",
+            "suggestions": suggestions if isinstance(suggestions, list) else [],
+            "data": query_result.get("rows") if query_result and query_result.get("success") else None,
+        }
 
         self.memory.add_message(session_id, "agent", response.get("answer", ""),
                                 metadata={"intent": intent.get("intent"), "sql": query_info.get("sql")})

@@ -401,6 +401,9 @@
       headers["X-API-Key"] = config.apiKey;
     }
 
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function() { controller.abort(); }, 120000);
+
     fetch(config.server + "/api/ask", {
       method: "POST",
       headers: headers,
@@ -408,8 +411,15 @@
         question: text,
         session_id: sessionId,
       }),
+      signal: controller.signal,
     })
-      .then(function (res) { return res.json(); })
+      .then(function (res) {
+        clearTimeout(timeoutId);
+        if (!res.ok) {
+          return res.json().then(function(err) { throw new Error(err.detail || "Server error"); });
+        }
+        return res.json();
+      })
       .then(function (data) {
         showTyping(false);
         sendBtn.disabled = false;
@@ -420,9 +430,14 @@
         );
       })
       .catch(function (err) {
+        clearTimeout(timeoutId);
         showTyping(false);
         sendBtn.disabled = false;
-        addMessage("Connection error. Make sure the AI Agent server is running.", "agent");
+        if (err.name === 'AbortError') {
+          addMessage("Response took too long. The AI model might be loading. Please try again.", "agent");
+        } else {
+          addMessage("Error: " + err.message, "agent");
+        }
       });
   }
 

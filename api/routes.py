@@ -1,7 +1,12 @@
+import time
+import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict
 from agent.core import AgentCore
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("agent")
 
 router = APIRouter()
 agent = AgentCore()
@@ -79,7 +84,12 @@ def disconnect():
 def ask_question(req: AskRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
-    return agent.ask(req.question, session_id=req.session_id)
+    logger.info(f"Question: {req.question}")
+    start = time.time()
+    result = agent.ask(req.question, session_id=req.session_id)
+    elapsed = round(time.time() - start, 1)
+    logger.info(f"Answer ({elapsed}s): {result.get('answer', '')[:100]}")
+    return result
 
 
 @router.get("/schema")
