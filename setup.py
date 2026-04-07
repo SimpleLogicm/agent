@@ -58,7 +58,6 @@ def install_ollama():
 
     if system == "Windows":
         print("  Downloading Ollama for Windows...")
-        # Download Ollama Windows installer
         try:
             import httpx
             url = "https://ollama.com/download/OllamaSetup.exe"
@@ -77,36 +76,34 @@ def install_ollama():
                             print(f"\r  Downloading... {pct}%", end="", flush=True)
                 print(f"\r  Download complete!          ")
 
-            print(f"  Running installer...")
-            print(f"  [NOTE] The Ollama installer window will open.")
-            print(f"  Please follow the installer and wait for it to finish.")
-            subprocess.run(f'start "" "{installer_path}"', shell=True)
+            # Silent install - no popups, no clicks needed
+            print("  Installing silently (no popups)...")
+            result = subprocess.run(
+                f'"{installer_path}" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES',
+                shell=True, timeout=120, capture_output=True,
+            )
 
-            # Wait for user to finish installation
-            print("\n  Waiting for Ollama installation to complete...")
-            print("  (Press Enter after the installer finishes)")
-            try:
-                input()
-            except EOFError:
-                time.sleep(30)
-
-            # Give Ollama time to start its service
-            time.sleep(5)
-
-            if is_ollama_running():
-                print("  [OK] Ollama installed and running!")
-                return True
-            else:
-                # Try starting it
-                subprocess.run("ollama serve", shell=True, start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Wait for Ollama service to start
+            print("  Waiting for Ollama to start...")
+            for i in range(12):
                 time.sleep(5)
                 if is_ollama_running():
                     print("  [OK] Ollama installed and running!")
                     return True
-                print("  [WARNING] Ollama installed but not running yet.")
-                print("  Try restarting your terminal or computer, then run setup again.")
-                return False
+
+            # Try starting manually
+            ollama_exe = find_ollama_path()
+            if ollama_exe:
+                subprocess.Popen(f'{ollama_exe} serve', shell=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(5)
+                if is_ollama_running():
+                    print("  [OK] Ollama installed and running!")
+                    return True
+
+            print("  [WARNING] Ollama installed but not running yet.")
+            print("  Restart your terminal, then run setup again.")
+            return False
 
         except Exception as e:
             print(f"  [ERROR] Auto-install failed: {e}")
