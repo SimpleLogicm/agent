@@ -251,12 +251,10 @@ Rules:
         }
 
         self.memory.add_message(session_id, "agent", response.get("answer", ""),
-                                metadata={"intent": intent.get("intent"), "sql": query_info.get("sql")})
+                                metadata={"sql": sql})
 
         response["debug"] = {
-            "intent": intent,
-            "sql": query_info.get("sql", ""),
-            "sql_explanation": query_info.get("explanation", ""),
+            "sql": sql,
             "db_type": self.db_type,
             "session_id": session_id,
         }
