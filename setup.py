@@ -472,17 +472,14 @@ BLOCKED_TABLES=
                 print(f"\n  [!] Install Ollama manually: https://ollama.com/download")
                 print(f"  Then run: ollama pull {ollama_model}")
 
-    # ─── Done ───
+    # ─── Step 5: Auto-start the agent ───
     py_cmd = "python" if platform.system() == "Windows" else "python3"
 
     print("\n" + "=" * 60)
-    print("  Setup Complete!")
-    print("=" * 60)
-    print(f"\n  Start the agent:  {py_cmd} main.py")
-    print(f"  Agent will run on: http://localhost:{agent_port}")
-    print(f"  Chat demo:         http://localhost:{agent_port}/chat")
-    print(f"  API docs:          http://localhost:{agent_port}/docs")
+    print("  Setup Complete! Starting agent...")
     print("=" * 60 + "\n")
+
+    os.execvp(sys.executable, [sys.executable, "main.py"])
 
 
 if __name__ == "__main__":

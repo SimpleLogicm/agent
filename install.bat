@@ -2,7 +2,6 @@
 echo.
 echo ============================================================
 echo   AI Agent SDK - Windows Installer
-echo   Install AI Agent in your project
 echo ============================================================
 echo.
 
@@ -16,19 +15,13 @@ if %errorlevel% neq 0 (
 echo [OK] Python found
 
 echo Installing dependencies...
-pip install -r requirements.txt
-if %errorlevel% neq 0 (
-    echo [ERROR] Failed to install dependencies
-    pause
-    exit /b 1
-)
+pip install -r requirements.txt -q
 echo [OK] Dependencies installed
 
 echo.
 echo ============================================================
-echo   Starting setup...
+echo   Enter your keys and database details below.
+echo   Everything else is automatic.
 echo ============================================================
 echo.
-python setup.py
-
-pause
+python setup.py %*
