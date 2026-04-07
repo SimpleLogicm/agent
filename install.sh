@@ -78,4 +78,4 @@ echo "  Starting interactive setup..."
 echo "  You will need your Project Key and API Key from the platform."
 echo "============================================================"
 echo ""
-python3 setup.py
+python3 setup.py < /dev/tty

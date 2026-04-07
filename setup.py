@@ -1,32 +1,68 @@
 #!/usr/bin/env python3
-"""Interactive setup for AI Agent SDK. Run this after install.sh"""
+"""
+Interactive setup for AI Agent SDK.
+
+Usage:
+  python3 setup.py                          (interactive)
+  python3 setup.py --pk pk_xxx --ak ak_xxx  (non-interactive)
+"""
 
 import os
 import sys
-import subprocess
+import argparse
+
 
 def ask(prompt, default=""):
-    val = input(f"  {prompt}" + (f" [{default}]" if default else "") + ": ").strip()
-    return val or default
+    try:
+        val = input(f"  {prompt}" + (f" [{default}]" if default else "") + ": ").strip()
+        return val or default
+    except EOFError:
+        return default
 
 
 def main():
+    # Support command-line args for non-interactive setup
+    parser = argparse.ArgumentParser(description="AI Agent SDK Setup")
+    parser.add_argument("--platform", default="", help="Platform URL")
+    parser.add_argument("--pk", default="", help="Project Key")
+    parser.add_argument("--ak", default="", help="API Key")
+    parser.add_argument("--model", default="", help="Ollama model")
+    parser.add_argument("--port", default="", help="Agent port")
+    args = parser.parse_args()
+
+    DEFAULT_PLATFORM = "https://agent-web-cdrs.onrender.com"
+
     print("\n" + "=" * 60)
     print("  AI Agent SDK - Setup")
     print("=" * 60)
     print("  You need your Project Key and API Key from the platform.")
-    print("  Get them at: https://your-platform.com/dashboard")
+    print(f"  Get them at: {DEFAULT_PLATFORM}/dashboard")
     print("=" * 60 + "\n")
 
-    # Get license info
-    platform_url = ask("Platform URL", "https://agent-web-cdrs.onrender.com")
-    project_key = ask("Project Key (pk_...)")
-    api_key = ask("API Key (ak_...)")
+    # Get license info (from args or interactive)
+    if args.pk and args.ak:
+        platform_url = args.platform or DEFAULT_PLATFORM
+        project_key = args.pk
+        api_key = args.ak
+        ollama_model = args.model or "llama3.2:3b"
+        agent_port = args.port or "8000"
+        print(f"  Using provided keys:")
+        print(f"  Platform:    {platform_url}")
+        print(f"  Project Key: {project_key[:15]}...")
+        print(f"  API Key:     {api_key[:12]}...")
+    else:
+        platform_url = ask("Platform URL", DEFAULT_PLATFORM)
+        project_key = ask("Project Key (pk_...)")
+        api_key = ask("API Key (ak_...)")
 
-    if not project_key or not api_key:
-        print("\n  [ERROR] Project Key and API Key are required!")
-        print("  Create a project on the platform dashboard first.\n")
-        sys.exit(1)
+        if not project_key or not api_key:
+            print("\n  [ERROR] Project Key and API Key are required!")
+            print(f"  Create a project at: {DEFAULT_PLATFORM}/dashboard\n")
+            sys.exit(1)
+
+        print("\n  Optional settings (press Enter for defaults):")
+        ollama_model = ask("AI Model", "llama3.2:3b")
+        agent_port = ask("Agent Port", "8000")
 
     # Validate with platform
     print("\n  Validating license...")
@@ -35,23 +71,18 @@ def main():
         resp = httpx.post(
             f"{platform_url.rstrip('/')}/api/validate-license",
             json={"project_key": project_key, "api_key": api_key},
-            timeout=10,
+            timeout=15,
         )
         if resp.status_code == 200:
             data = resp.json()
             print(f"  License VALID: \"{data.get('project_name', 'Unknown')}\"")
         else:
             print(f"\n  [ERROR] Invalid keys! Server said: {resp.text}")
-            print("  Check your keys on the platform dashboard.\n")
+            print(f"  Check your keys at: {DEFAULT_PLATFORM}/dashboard\n")
             sys.exit(1)
     except Exception as e:
         print(f"\n  [WARNING] Cannot reach platform: {e}")
         print("  Continuing with offline setup. Keys will be validated when platform is reachable.\n")
-
-    # Optional settings
-    print("\n  Optional settings (press Enter for defaults):")
-    ollama_model = ask("AI Model", "llama3.2:3b")
-    agent_port = ask("Agent Port", "8000")
 
     # Write .env
     env_content = f"""# AI Agent SDK Configuration
