@@ -206,8 +206,14 @@ Schema:
 
 Question: "{question}"
 
-Respond ONLY with the SQL query. No explanation. No markdown. Just the raw SQL.
-Rules: Use LIMIT 20. Use proper JOINs. If no SQL needed, respond with: NONE"""
+CRITICAL RULES:
+1. ALWAYS wrap table names in double quotes. Example: SELECT * FROM "Connect_connect_customers"
+2. ALWAYS wrap column names in double quotes. Example: SELECT "name", "email" FROM "Connect_connect_customers"
+3. Use LIMIT 20
+4. Use proper JOINs with double-quoted names
+5. If no SQL needed, respond with: NONE
+
+Respond ONLY with the raw SQL query. No explanation. No markdown."""
 
         try:
             sql = llm_chat(sql_prompt, temperature=0.1)
@@ -225,7 +231,7 @@ Rules: Use LIMIT 20. Use proper JOINs. If no SQL needed, respond with: NONE"""
         if sql.upper() == "NONE" or not sql:
             sql = ""
 
-        # ─── Execute SQL on local database ───
+        # ─── Execute SQL on local database (with auto-retry on error) ───
         query_result = None
         rows = []
         if sql:
@@ -235,7 +241,34 @@ Rules: Use LIMIT 20. Use proper JOINs. If no SQL needed, respond with: NONE"""
                 rows = query_result.get("rows", [])
                 logger.info(f"  [3] DB execute: {round(time.time()-t0, 1)}s → {len(rows)} rows")
             else:
-                logger.warning(f"  [3] DB error: {query_result.get('error')}")
+                db_error = query_result.get("error", "")
+                logger.warning(f"  [3] DB error, retrying: {db_error[:100]}")
+                # Auto-retry: send error to LLM to fix the SQL
+                try:
+                    fix_prompt = f"""The SQL query failed with this error:
+{db_error[:500]}
+
+Original query: {sql}
+
+Schema:
+{relevant_schema[:2000]}
+
+RULES: ALWAYS use double quotes around ALL table and column names. Example: SELECT "name" FROM "Connect_connect_customers"
+Fix the query. Respond with ONLY the corrected SQL. No explanation."""
+                    sql = llm_chat(fix_prompt, temperature=0.1)
+                    sql = sql.strip()
+                    if sql.startswith("```"):
+                        sql = sql.split("```")[1].strip()
+                        if sql.startswith("sql"):
+                            sql = sql[3:].strip()
+                    query_result = self.action_engine.execute({"sql": sql, "params": {}})
+                    if query_result.get("success"):
+                        rows = query_result.get("rows", [])
+                        logger.info(f"  [3b] Retry success: {len(rows)} rows")
+                    else:
+                        logger.warning(f"  [3b] Retry also failed")
+                except Exception as e:
+                    logger.error(f"  [3b] Retry error: {e}")
 
         # ─── LLM Call 2: Generate proper conversational answer ───
         t0 = time.time()
