@@ -25,6 +25,9 @@ class ResponseBuilder:
         elif affected is not None:
             data_summary = f"Operation affected {affected} rows."
 
+        if len(schema_summary) > 2000:
+            schema_summary = schema_summary[:2000]
+
         prompt = f"""You are a helpful AI assistant for a database. The user asked a question, and you have the query results.
 
 Database Schema Summary:

@@ -5,6 +5,9 @@ from config import settings
 
 class QueryGenerator:
     def generate(self, intent: dict, schema_summary: str) -> dict:
+        if len(schema_summary) > 3000:
+            schema_summary = schema_summary[:3000] + "\n... (truncated)"
+
         prompt = f"""You are a PostgreSQL query generator. Generate a safe SQL query based on the user's intent and database schema.
 
 Database Schema:

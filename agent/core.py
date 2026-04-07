@@ -63,24 +63,28 @@ class AgentCore:
         self.db_type = db_type_lower
         self.action_engine = ActionEngine(self.connector)
 
-        raw_schema = self.connector.get_full_schema()
+        # FAST: Only get table names + columns (no row counts, no samples, no indexes)
+        tables = self.connector.get_tables()
+        raw_schema = {}
+        for table in tables:
+            if table in settings.BLOCKED_TABLES:
+                continue
+            try:
+                raw_schema[table] = self.connector.get_table_schema(table)
+            except Exception:
+                raw_schema[table] = {"table": table, "columns": [], "foreign_keys": [], "indexes": []}
 
-        sample_data = {}
-        for table_name in raw_schema:
-            if table_name not in settings.BLOCKED_TABLES:
-                try:
-                    sample_data[table_name] = self.connector.get_sample_data(
-                        table_name, settings.SAMPLE_ROWS_FOR_CONTEXT
-                    )
-                except Exception:
-                    sample_data[table_name] = []
+        self.analysis = self.schema_analyzer.analyze(raw_schema)
 
-        self.analysis = self.schema_analyzer.analyze(raw_schema, sample_data)
-
-        self.business_info = self.business_logic.learn(
-            domain=self.analysis.get("domain", "general"),
-            schema=raw_schema,
-        )
+        # Skip business logic learning for large DBs (do it lazily)
+        if len(tables) < 50:
+            self.business_info = self.business_logic.learn(
+                domain=self.analysis.get("domain", "general"),
+                schema=raw_schema,
+            )
+        else:
+            self.business_info = {"workflows_learned": 0, "workflows": []}
+            self.business_logic.domain = self.analysis.get("domain", "general")
 
         self.is_ready = True
 

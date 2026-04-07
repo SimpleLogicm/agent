@@ -28,8 +28,7 @@ class SchemaAnalyzer:
         for table_name, table_info in schema.items():
             cols = table_info.get("columns", [])
             col_names = [c['name'] for c in cols]
-            row_count = table_info.get("row_count", "?")
-            lines.append(f"{table_name} ({row_count} rows): {', '.join(col_names)}")
+            lines.append(f"{table_name}: {', '.join(col_names)}")
 
         return "\n".join(lines)
 

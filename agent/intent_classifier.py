@@ -5,6 +5,10 @@ from config import settings
 
 class IntentClassifier:
     def classify(self, question: str, schema_summary: str) -> dict:
+        # Limit schema to prevent slow LLM responses
+        if len(schema_summary) > 3000:
+            schema_summary = schema_summary[:3000] + "\n... (truncated)"
+
         prompt = f"""You are an intent classifier for a database agent. Given a user's question and the database schema, classify the intent.
 
 Database Schema:
