@@ -114,6 +114,35 @@ if __name__ == "__main__":
 
     app = create_app()
 
+    # Auto-connect database if configured in .env
+    db_connected = False
+    if settings.DB_TYPE and settings.DB_NAME:
+        print("  Connecting to database...")
+        from api.routes import agent
+        try:
+            kwargs = {
+                "host": settings.DB_HOST,
+                "port": int(settings.DB_PORT) if settings.DB_PORT else 5432,
+                "database": settings.DB_NAME,
+                "user": settings.DB_USER,
+                "password": settings.DB_PASSWORD,
+            }
+            result = agent.connect_database(db_type=settings.DB_TYPE, **kwargs)
+            if result.get("status") == "connected":
+                db_connected = True
+                domain = result.get("domain", "unknown")
+                tables = result.get("tables", [])
+                print(f"  [OK] Database connected!")
+                print(f"  Domain:     {domain}")
+                print(f"  Tables:     {', '.join(tables[:5])}" + (f" (+{len(tables)-5} more)" if len(tables) > 5 else ""))
+                print(f"  Workflows:  {result.get('workflows_learned', 0)} learned")
+            else:
+                print(f"  [WARNING] Database connection failed: {result.get('message', 'Unknown error')}")
+                print("  Agent will start without database. Connect manually via API.")
+        except Exception as e:
+            print(f"  [WARNING] Database connection error: {e}")
+            print("  Agent will start without database. Connect manually via API.")
+
     print("=" * 60)
     project_name = license_info.get("project_name", "Unknown")
     print(f"  Project:    {project_name}")
@@ -121,9 +150,13 @@ if __name__ == "__main__":
     print(f"  Chat:       http://localhost:{settings.AGENT_PORT}/chat")
     print(f"  API Docs:   http://localhost:{settings.AGENT_PORT}/docs")
     print(f"  Model:      {settings.OLLAMA_MODEL}")
+    print(f"  Database:   {'Connected' if db_connected else 'Not connected (use /api/connect)'}")
     print(f"  Privacy:    100% local - no data leaves this machine")
     print("=" * 60)
-    print("  Ready! Connect a database and start asking questions.")
+    if db_connected:
+        print("  Ready! Open /chat and start asking questions.")
+    else:
+        print("  Ready! Connect a database first, then start asking questions.")
     print("=" * 60 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=settings.AGENT_PORT)

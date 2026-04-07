@@ -24,6 +24,14 @@ class Settings:
         t.strip() for t in os.getenv("BLOCKED_TABLES", "").split(",") if t.strip()
     ]
 
+    # Database (auto-connect on startup)
+    DB_TYPE: str = os.getenv("DB_TYPE", "")
+    DB_HOST: str = os.getenv("DB_HOST", "localhost")
+    DB_PORT: str = os.getenv("DB_PORT", "")
+    DB_NAME: str = os.getenv("DB_NAME", "")
+    DB_USER: str = os.getenv("DB_USER", "")
+    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
+
     # Agent server
     AGENT_PORT: int = int(os.getenv("AGENT_PORT", "8000"))
 
