@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+.license
+*.db
+agent_memory.db
+agent_knowledge.json
+.DS_Store

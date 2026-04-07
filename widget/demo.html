@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Demo - Chat Widget</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f3f4f6;
+            min-height: 100vh;
+        }
+        .hero {
+            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+            color: white;
+            padding: 60px 20px;
+            text-align: center;
+        }
+        .hero h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .hero p { font-size: 1.1em; opacity: 0.9; max-width: 600px; margin: 0 auto; }
+        .content {
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .card h2 { color: #1f2937; margin-bottom: 12px; }
+        .card p { color: #6b7280; line-height: 1.6; }
+        .badge {
+            display: inline-block;
+            background: #EEF2FF;
+            color: #4F46E5;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            margin: 4px;
+        }
+        code {
+            background: #1f2937;
+            color: #10b981;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+        .feature {
+            background: #f9fafb;
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+        }
+        .feature h3 { font-size: 14px; color: #374151; margin-bottom: 4px; }
+        .feature p { font-size: 12px; color: #6b7280; }
+        .arrow { font-size: 20px; text-align: center; margin: 10px 0; color: #9ca3af; }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <h1>AI Agent Engine</h1>
+        <p>Click the chat button in the bottom-right corner to talk to your AI assistant. It understands your database and can answer questions, run queries, and give suggestions.</p>
+    </div>
+
+    <div class="content">
+        <div class="card">
+            <h2>How It Works</h2>
+            <div class="arrow">your website</div>
+            <div class="arrow">&darr;</div>
+            <div class="arrow">chat widget (this page)</div>
+            <div class="arrow">&darr;</div>
+            <div class="arrow">AI Agent API (localhost:8000)</div>
+            <div class="arrow">&darr;</div>
+            <div class="arrow">Ollama LLM (local, private)</div>
+            <p style="margin-top: 16px; text-align: center;">
+                <span class="badge">100% Local</span>
+                <span class="badge">No Data Leaves</span>
+                <span class="badge">Free Forever</span>
+            </p>
+        </div>
+
+        <div class="card">
+            <h2>Try Asking</h2>
+            <div class="feature-grid">
+                <div class="feature">
+                    <h3>Data Questions</h3>
+                    <p>"Show me all doctors"</p>
+                </div>
+                <div class="feature">
+                    <h3>Search</h3>
+                    <p>"Find patients over 40"</p>
+                </div>
+                <div class="feature">
+                    <h3>Analytics</h3>
+                    <p>"How many appointments today?"</p>
+                </div>
+                <div class="feature">
+                    <h3>Structure</h3>
+                    <p>"What tables do I have?"</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Embed In Your Website</h2>
+            <p>Add these 2 lines to any HTML page:</p>
+            <pre style="background: #1f2937; color: #e5e7eb; padding: 16px; border-radius: 8px; margin-top: 12px; overflow-x: auto; font-size: 13px;">
+&lt;script src="http://localhost:8000/widget/ai-agent-widget.js"&gt;&lt;/script&gt;
+&lt;script&gt;AIAgent.init({ server: "http://localhost:8000" });&lt;/script&gt;</pre>
+        </div>
+    </div>
+
+    <!-- This is all you need to add the AI chat to ANY website -->
+    <script src="/widget/ai-agent-widget.js"></script>
+    <script>
+        AIAgent.init({
+            server: "http://localhost:8000",
+            title: "AI Assistant",
+            subtitle: "Ask me anything about your data",
+            theme: "#4F46E5",
+            welcome: "Hello! I'm your AI assistant. I'm connected to your database and ready to help. Try asking 'what tables do I have?' or 'show me all doctors'."
+        });
+    </script>
+</body>
+</html>
