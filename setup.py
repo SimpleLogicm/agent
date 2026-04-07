@@ -144,43 +144,69 @@ def install_ollama():
         return False
 
 
+def find_ollama_path():
+    """Find ollama executable path, especially on Windows where PATH may not be updated."""
+    # Try direct command first
+    try:
+        result = subprocess.run("ollama --version", shell=True, capture_output=True, timeout=5)
+        if result.returncode == 0:
+            return "ollama"
+    except Exception:
+        pass
+
+    # Windows-specific paths
+    if platform.system() == "Windows":
+        home = os.path.expanduser("~")
+        possible_paths = [
+            os.path.join(home, "AppData", "Local", "Programs", "Ollama", "ollama.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"),
+            os.path.join(os.environ.get("PROGRAMFILES", ""), "Ollama", "ollama.exe"),
+            r"C:\Program Files\Ollama\ollama.exe",
+        ]
+        for path in possible_paths:
+            if path and os.path.exists(path):
+                return f'"{path}"'
+
+    # macOS
+    if platform.system() == "Darwin":
+        mac_paths = ["/usr/local/bin/ollama", os.path.expanduser("~/bin/ollama")]
+        for path in mac_paths:
+            if os.path.exists(path):
+                return path
+
+    return None
+
+
 def pull_model(model_name):
     """Pull an AI model via Ollama."""
     print(f"\n  Downloading AI model '{model_name}' (~2GB, one-time)...")
     print("  This may take a few minutes...")
 
+    ollama_cmd = find_ollama_path()
+    if not ollama_cmd:
+        print(f"  [WARNING] Cannot find ollama executable.")
+        print(f"  Please restart your terminal and run: ollama pull {model_name}")
+        return False
+
     try:
         result = subprocess.run(
-            f"ollama pull {model_name}",
+            f"{ollama_cmd} pull {model_name}",
             shell=True, timeout=600,
-            capture_output=False,  # Show progress in terminal
+            capture_output=False,
         )
         if result.returncode == 0:
             print(f"  [OK] Model '{model_name}' ready!")
             return True
         else:
-            print(f"  [WARNING] Failed to pull model. Run manually: ollama pull {model_name}")
+            print(f"  [WARNING] Failed to pull model.")
+            print(f"  Restart your terminal and run: ollama pull {model_name}")
             return False
     except subprocess.TimeoutExpired:
-        print(f"  [WARNING] Download timed out. Run manually: ollama pull {model_name}")
+        print(f"  [WARNING] Download timed out. Run: ollama pull {model_name}")
         return False
-    except FileNotFoundError:
-        # ollama not in PATH, try full path on Windows
-        if platform.system() == "Windows":
-            ollama_paths = [
-                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
-                os.path.expandvars(r"%PROGRAMFILES%\Ollama\ollama.exe"),
-                r"C:\Users\%USERNAME%\AppData\Local\Programs\Ollama\ollama.exe",
-            ]
-            for path in ollama_paths:
-                path = os.path.expandvars(path)
-                if os.path.exists(path):
-                    try:
-                        subprocess.run(f'"{path}" pull {model_name}', shell=True, timeout=600)
-                        return True
-                    except Exception:
-                        continue
-        print(f"  [WARNING] 'ollama' not found in PATH. Run manually: ollama pull {model_name}")
+    except Exception as e:
+        print(f"  [WARNING] Error: {e}")
+        print(f"  Restart your terminal and run: ollama pull {model_name}")
         return False
 
 
