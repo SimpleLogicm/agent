@@ -321,6 +321,8 @@ def main():
     parser.add_argument("--model", default="", help="Ollama model")
     parser.add_argument("--port", default="", help="Agent port")
     parser.add_argument("--skip-ollama", action="store_true", help="Skip Ollama install")
+    parser.add_argument("--llm", default="", help="LLM provider: groq or ollama")
+    parser.add_argument("--groq-key", default="", help="Groq API key (free from console.groq.com)")
     parser.add_argument("--db-type", default="", help="Database type: postgresql, mysql, mongodb, sqlite")
     parser.add_argument("--db-host", default="", help="Database host")
     parser.add_argument("--db-port", default="", help="Database port")
@@ -345,10 +347,13 @@ def main():
         api_key = args.ak
         ollama_model = args.model or "llama3.2:3b"
         agent_port = args.port or "8000"
+        llm_provider = args.llm or "groq"
+        groq_api_key = args.groq_key or ""
         print(f"  Using provided keys:")
         print(f"  Platform:    {platform_url}")
         print(f"  Project Key: {project_key[:15]}...")
         print(f"  API Key:     {api_key[:12]}...")
+        print(f"  LLM:         {llm_provider}")
     else:
         platform_url = ask("Platform URL", DEFAULT_PLATFORM)
         project_key = ask("Project Key (pk_...)")
@@ -359,8 +364,21 @@ def main():
             print(f"  Create a project at: {DEFAULT_PLATFORM}/dashboard\n")
             sys.exit(1)
 
+        print("\n  ─── AI Provider ───")
+        print("  groq   = Fast (1-2 sec), free, questions go to cloud")
+        print("  ollama = Slower (15-60 sec), 100% offline")
+        llm_provider = ask("AI Provider", "groq")
+
+        groq_api_key = ""
+        if llm_provider == "groq":
+            print("\n  Get your FREE Groq key at: https://console.groq.com/keys")
+            groq_api_key = ask("Groq API Key")
+            if not groq_api_key:
+                print("  No Groq key provided. Will use Ollama (slower).")
+                llm_provider = "ollama"
+
         print("\n  Optional settings (press Enter for defaults):")
-        ollama_model = ask("AI Model", "llama3.2:3b")
+        ollama_model = ask("Ollama Model (fallback)", "llama3.2:3b")
         agent_port = ask("Agent Port", "8000")
 
     # ─── Step 2: Validate license ───
@@ -434,7 +452,12 @@ DB_NAME={db_name}
 DB_USER={db_user}
 DB_PASSWORD={db_password}
 
-# AI Model
+# AI Provider: groq (fast, free) or ollama (slow, offline)
+LLM_PROVIDER={llm_provider}
+GROQ_API_KEY={groq_api_key}
+GROQ_MODEL=llama-3.1-8b-instant
+
+# Ollama (fallback / offline mode)
 OLLAMA_MODEL={ollama_model}
 OLLAMA_FALLBACK_MODEL=mistral
 

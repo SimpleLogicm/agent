@@ -187,80 +187,100 @@ class AgentCore:
             self.memory.add_message(session_id, "agent", answer["answer"])
             return answer
 
-        # Find only relevant tables for this question
+        # Find relevant tables
         t0 = time.time()
         relevant_schema = self.schema_analyzer.find_relevant_tables(question, max_tables=10)
         if not relevant_schema:
             relevant_schema = schema_summary[:2000]
         logger.info(f"  [1] Find tables: {round(time.time()-t0, 1)}s")
 
-        # SINGLE LLM call - generate SQL directly (skip intent + response builder)
-        t0 = time.time()
         import json as _json
-        import ollama as _ollama
-        fast_prompt = f"""You are a database assistant. Given the schema and question, generate a SQL query and a short answer.
+        from agent.llm import chat as llm_chat
+
+        # ─── LLM Call 1: Generate SQL ───
+        t0 = time.time()
+        sql_prompt = f"""You are a PostgreSQL expert. Generate a SQL query for this question.
 
 Schema:
 {relevant_schema[:2500]}
 
 Question: "{question}"
 
-Respond ONLY with valid JSON:
-{{"sql": "SELECT ...", "answer": "short natural language answer", "suggestions": ["suggestion1", "suggestion2"]}}
-
-Rules:
-- Generate valid PostgreSQL SQL
-- Use LIMIT 20
-- If question is greeting (hi/hello), respond with: {{"sql": "", "answer": "Hello! I'm connected to your database. Ask me anything about your data.", "suggestions": ["Show all tables", "Count records"]}}"""
+Respond ONLY with the SQL query. No explanation. No markdown. Just the raw SQL.
+Rules: Use LIMIT 20. Use proper JOINs. If no SQL needed, respond with: NONE"""
 
         try:
-            llm_resp = _ollama.chat(
-                model=settings.OLLAMA_MODEL,
-                messages=[{"role": "user", "content": fast_prompt}],
-                options={"temperature": 0.1},
-            )
-            raw = llm_resp["message"]["content"].strip()
-            logger.info(f"  [2] LLM response: {round(time.time()-t0, 1)}s")
-
-            # Parse JSON from LLM
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            start_idx = raw.find("{")
-            end_idx = raw.rfind("}") + 1
-            if start_idx != -1 and end_idx > start_idx:
-                parsed = _json.loads(raw[start_idx:end_idx])
-            else:
-                parsed = {"sql": "", "answer": raw, "suggestions": []}
+            sql = llm_chat(sql_prompt, temperature=0.1)
+            logger.info(f"  [2] SQL generated: {round(time.time()-t0, 1)}s → {sql[:80]}")
         except Exception as e:
             logger.error(f"  LLM error: {e}")
-            parsed = {"sql": "", "answer": f"Error processing your question: {e}", "suggestions": []}
+            sql = ""
 
-        sql = parsed.get("sql", "")
-        answer_text = parsed.get("answer", "")
-        suggestions = parsed.get("suggestions", [])
+        # Clean SQL
+        sql = sql.strip()
+        if sql.startswith("```"):
+            sql = sql.split("```")[1].strip()
+            if sql.startswith("sql"):
+                sql = sql[3:].strip()
+        if sql.upper() == "NONE" or not sql:
+            sql = ""
 
-        # Execute SQL if generated
+        # ─── Execute SQL on local database ───
         query_result = None
-        if sql and sql.strip().upper().startswith("SELECT"):
+        rows = []
+        if sql:
             t0 = time.time()
-            query_info = {"sql": sql, "params": {}}
-            query_result = self.action_engine.execute(query_info)
-            logger.info(f"  [3] DB execute: {round(time.time()-t0, 1)}s → {query_result.get('row_count', 0)} rows")
+            query_result = self.action_engine.execute({"sql": sql, "params": {}})
+            if query_result.get("success"):
+                rows = query_result.get("rows", [])
+                logger.info(f"  [3] DB execute: {round(time.time()-t0, 1)}s → {len(rows)} rows")
+            else:
+                logger.warning(f"  [3] DB error: {query_result.get('error')}")
 
-            if query_result.get("success") and query_result.get("rows"):
-                rows = query_result["rows"]
-                if not answer_text or answer_text == "short natural language answer":
-                    answer_text = f"Found {len(rows)} results."
-        elif sql:
-            query_info = {"sql": sql, "params": {}}
-            query_result = self.action_engine.execute(query_info)
+        # ─── LLM Call 2: Generate proper conversational answer ───
+        t0 = time.time()
+        data_text = ""
+        if rows:
+            # Send max 10 rows to LLM for answer generation
+            sample_rows = rows[:10]
+            data_text = f"\n\nQuery returned {len(rows)} rows. Data:\n{_json.dumps(sample_rows, indent=2, default=str)}"
+            if len(rows) > 10:
+                data_text += f"\n... and {len(rows) - 10} more rows"
+        elif query_result and not query_result.get("success"):
+            data_text = f"\n\nQuery failed: {query_result.get('error', 'unknown error')}"
+
+        answer_prompt = f"""You are a helpful AI assistant for a {self.analysis.get('domain', '')} business.
+The user asked a question and here are the results from the database.
+
+Question: "{question}"
+{data_text if data_text else chr(10) + "No data found for this query."}
+
+Give a helpful, conversational answer. Include:
+1. Direct answer to the question with specific numbers/names from the data
+2. Key insights or observations
+3. 2-3 follow-up suggestions
+
+Be friendly and specific. Use actual data values in your answer. Keep it concise."""
+
+        try:
+            answer_text = llm_chat(answer_prompt, temperature=0.3)
+            logger.info(f"  [4] Answer built: {round(time.time()-t0, 1)}s")
+        except Exception as e:
+            logger.error(f"  Answer error: {e}")
+            if rows:
+                answer_text = f"Found {len(rows)} results for your query."
+            else:
+                answer_text = "I couldn't generate an answer for that question."
+
+        # Extract suggestions from answer or generate defaults
+        suggestions = []
+        if tables_list:
+            suggestions = [f"Tell me more about {tables_list[0]}", "Show recent records", "What insights do you have?"]
 
         response = {
-            "answer": answer_text or "I processed your question but couldn't generate a response.",
-            "suggestions": suggestions if isinstance(suggestions, list) else [],
-            "data": query_result.get("rows") if query_result and query_result.get("success") else None,
+            "answer": answer_text,
+            "suggestions": suggestions,
+            "data": rows if rows else None,
         }
 
         self.memory.add_message(session_id, "agent", response.get("answer", ""),
