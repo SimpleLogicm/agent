@@ -19,7 +19,7 @@ def main():
     print("=" * 60 + "\n")
 
     # Get license info
-    platform_url = ask("Platform URL", "http://localhost:9000")
+    platform_url = ask("Platform URL", "https://agent-web-cdrs.onrender.com")
     project_key = ask("Project Key (pk_...)")
     api_key = ask("API Key (ak_...)")
 
