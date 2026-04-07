@@ -118,29 +118,119 @@ def install_ollama():
             print("  Ollama app found. Starting it...")
             subprocess.run("open /Applications/Ollama.app", shell=True)
             time.sleep(5)
-            return is_ollama_running()
-        else:
-            print("  Downloading Ollama for macOS...")
-            ok, _ = run_cmd("curl -fsSL https://ollama.com/install.sh | sh")
-            if ok:
-                time.sleep(3)
-                return is_ollama_running()
-            print("  [WARNING] Install manually: https://ollama.com/download")
-            return False
+            if is_ollama_running():
+                print("  [OK] Ollama is running!")
+                return True
+
+        # Try installing via official script
+        print("  Downloading Ollama for macOS...")
+        try:
+            import httpx
+            url = "https://ollama.com/download/Ollama-darwin.zip"
+            zip_path = "/tmp/Ollama-darwin.zip"
+
+            print(f"  Downloading from {url}...")
+            with httpx.stream("GET", url, follow_redirects=True, timeout=120) as response:
+                total = int(response.headers.get("content-length", 0))
+                downloaded = 0
+                with open(zip_path, "wb") as f:
+                    for chunk in response.iter_bytes(8192):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            pct = int(downloaded / total * 100)
+                            print(f"\r  Downloading... {pct}%", end="", flush=True)
+            print(f"\r  Download complete!          ")
+
+            # Unzip and move to Applications
+            print("  Installing to /Applications...")
+            run_cmd("unzip -o /tmp/Ollama-darwin.zip -d /Applications/")
+            time.sleep(2)
+
+            if os.path.exists("/Applications/Ollama.app"):
+                print("  Starting Ollama...")
+                subprocess.run("open /Applications/Ollama.app", shell=True)
+                time.sleep(5)
+                if is_ollama_running():
+                    print("  [OK] Ollama installed and running!")
+                    return True
+
+        except Exception as e:
+            print(f"  Download failed: {e}")
+
+        # Fallback to curl script
+        print("  Trying alternative install method...")
+        ok, _ = run_cmd("curl -fsSL https://ollama.com/install.sh | sh")
+        if ok:
+            time.sleep(3)
+            if is_ollama_running():
+                print("  [OK] Ollama installed and running!")
+                return True
+            # Try starting it
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(5)
+            if is_ollama_running():
+                print("  [OK] Ollama installed and running!")
+                return True
+
+        print("  [WARNING] Could not auto-install Ollama.")
+        print("  Install manually: https://ollama.com/download")
+        print("  After installing, run: ollama serve")
+        return False
 
     elif system == "Linux":
         print("  Downloading Ollama for Linux...")
+        print("  Running: curl -fsSL https://ollama.com/install.sh | sh")
+        print("  (This may ask for sudo password)")
+
+        # Try with sudo
         ok, output = run_cmd("curl -fsSL https://ollama.com/install.sh | sh")
+        if not ok:
+            # Try without sudo wrapper
+            ok, output = run_cmd("curl -fsSL https://ollama.com/install.sh | bash")
+
         if ok:
-            run_cmd("ollama serve &")
+            print("  [OK] Ollama installed!")
+            # Start ollama service
+            print("  Starting Ollama service...")
+
+            # Try systemd first
+            run_cmd("sudo systemctl start ollama 2>/dev/null")
+            time.sleep(3)
+
+            if is_ollama_running():
+                print("  [OK] Ollama is running!")
+                return True
+
+            # Try direct start
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(5)
-            return is_ollama_running()
-        print("  [WARNING] Install manually: https://ollama.com/download")
-        return False
+
+            if is_ollama_running():
+                print("  [OK] Ollama is running!")
+                return True
+
+            # Try with nohup
+            run_cmd("nohup ollama serve > /dev/null 2>&1 &")
+            time.sleep(5)
+
+            if is_ollama_running():
+                print("  [OK] Ollama is running!")
+                return True
+
+            print("  [WARNING] Ollama installed but could not start automatically.")
+            print("  Run in a separate terminal: ollama serve")
+            return False
+        else:
+            print("  [WARNING] Could not auto-install Ollama.")
+            print("  Install manually:")
+            print("    curl -fsSL https://ollama.com/install.sh | sh")
+            print("  Then start: ollama serve")
+            return False
 
     else:
         print(f"  [WARNING] Unsupported OS: {system}")
-        print("  Install manually: https://ollama.com/download")
+        print("  Install Ollama manually: https://ollama.com/download")
         return False
 
 
@@ -169,8 +259,24 @@ def find_ollama_path():
 
     # macOS
     if platform.system() == "Darwin":
-        mac_paths = ["/usr/local/bin/ollama", os.path.expanduser("~/bin/ollama")]
+        mac_paths = [
+            "/usr/local/bin/ollama",
+            os.path.expanduser("~/bin/ollama"),
+            "/opt/homebrew/bin/ollama",
+        ]
         for path in mac_paths:
+            if os.path.exists(path):
+                return path
+
+    # Linux
+    if platform.system() == "Linux":
+        linux_paths = [
+            "/usr/local/bin/ollama",
+            "/usr/bin/ollama",
+            os.path.expanduser("~/bin/ollama"),
+            "/snap/bin/ollama",
+        ]
+        for path in linux_paths:
             if os.path.exists(path):
                 return path
 
