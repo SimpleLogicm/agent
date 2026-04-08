@@ -156,7 +156,7 @@
 
       .ai-msg {
         max-width: 85%;
-        padding: 10px 14px;
+        padding: 12px 16px;
         border-radius: 12px;
         font-size: 13px;
         line-height: 1.5;
@@ -167,6 +167,7 @@
         align-self: flex-end;
         background: ${config.theme};
         color: white;
+        padding: 10px 18px;
         border-bottom-right-radius: 4px;
       }
 
