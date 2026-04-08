@@ -284,15 +284,22 @@ Use EXACT table names. JSON only."""
                        "i", "want", "need", "please", "sir", "maam", "top", "recent", "ka", "ki",
                        "kitne", "batao", "dikhao", "chahiye", "number", "naam", "name", "full", "detail",
                        "details", "more", "info", "mobile", "email", "phone", "address", "can", "you",
-                       "sirf", "only", "just", "give", "muze", "mujhe", "kya", "hai"}
-        words = set(q_lower.replace("'", "").replace("?", "").replace(".", "").replace(",", "").split())
-        names = [n for n in (words - stop_words) if len(n) > 2]
+                       "sirf", "only", "just", "give", "muze", "mujhe", "kya", "hai", "then", "check",
+                       "in", "table", "user", "users", "customer", "customers", "order", "orders",
+                       "data", "database", "connected", "search", "look", "looking", "for",
+                       "from", "with", "this", "that", "these", "those", "also", "too",
+                       "total", "much", "very", "really", "some", "any", "each", "every",
+                       "new", "old", "first", "last", "next", "previous", "before", "after"}
+        words = q_lower.replace("'", "").replace("?", "").replace(".", "").replace(",", "").split()
+        names = [n for n in words if n not in stop_words and len(n) > 2]
 
         hints = []
         if names:
-            hints.append(f"IMPORTANT: User is searching for '{', '.join(names)}'. Search ALL name columns using ILIKE '%{names[0]}%'")
-            hints.append(f"Try columns like: customer_first_name, first_name, name, username, full_name, customer_last_name, last_name")
-            hints.append(f"SELECT * to get all details (phone, email, etc.)")
+            name = names[0]
+            hints.append(f"IMPORTANT: User is searching for a person/entity named '{name}'.")
+            hints.append(f"Use ILIKE '%{name}%' on EVERY text/varchar column that could contain a name.")
+            hints.append(f"Search multiple columns: WHERE col1 ILIKE '%{name}%' OR col2 ILIKE '%{name}%' OR col3 ILIKE '%{name}%'")
+            hints.append(f"Use SELECT * to return all details.")
         return "\n".join(hints)
 
     def _basic_analysis(self, schema: Dict) -> tuple:

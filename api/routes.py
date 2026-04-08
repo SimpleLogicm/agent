@@ -92,6 +92,32 @@ def ask_question(req: AskRequest):
     return result
 
 
+@router.get("/debug/table/{table_name}")
+def debug_table(table_name: str):
+    """Debug: show exact columns and sample data for a table."""
+    if not agent.is_ready:
+        raise HTTPException(status_code=400, detail="No database connected")
+    schema = agent.schema_analyzer.schema
+    if table_name not in schema:
+        return {"error": f"Table '{table_name}' not found", "available": list(schema.keys())[:20]}
+    info = schema[table_name]
+    cols = [{"name": c["name"], "type": c.get("type", "")} for c in info.get("columns", [])]
+    try:
+        sample = agent.connector.get_sample_data(table_name, limit=3)
+    except Exception:
+        sample = []
+    return {"table": table_name, "columns": cols, "sample_data": sample}
+
+
+@router.get("/debug/brain")
+def debug_brain():
+    """Debug: show what the brain learned."""
+    return {
+        "table_map": agent.db_brain.table_map,
+        "total_tables_understood": len(agent.db_brain.table_info),
+    }
+
+
 @router.get("/schema")
 def get_schema():
     schema = agent.get_schema()
