@@ -242,12 +242,16 @@ Use EXACT table names. JSON only."""
                        "where", "all", "me", "about", "the", "is", "are", "my", "our", "do", "have",
                        "i", "want", "need", "please", "sir", "maam", "top", "recent", "new", "old",
                        "total", "much", "give", "muze", "mujhe", "ka", "ki", "ke", "hai", "kya",
-                       "kitne", "kitna", "batao", "dikhao", "chahiye", "number", "naam", "name"}
+                       "kitne", "kitna", "batao", "dikhao", "chahiye", "number", "naam", "name",
+                       "full", "detail", "details", "more", "info", "information", "can", "you",
+                       "sirf", "only", "just", "mobile", "email", "phone", "address"}
         words = set(q_lower.replace("'", "").replace("?", "").replace(".", "").replace(",", "").split())
         potential_names = words - stop_words
+        # Remove very short words (likely not names)
+        potential_names = {w for w in potential_names if len(w) > 2}
 
-        if potential_names and not matched_cats:
-            # Probably searching for a person
+        if potential_names:
+            # Probably searching for a person - ALWAYS check customer/user tables
             for cat in ["customers", "users", "employees", "contacts", "leads"]:
                 for table in self.table_map.get(cat, []):
                     if table in schema:
@@ -278,14 +282,18 @@ Use EXACT table names. JSON only."""
         stop_words = {"show", "tell", "find", "get", "list", "how", "many", "count", "what", "who",
                        "where", "all", "me", "about", "the", "is", "are", "my", "our", "do", "have",
                        "i", "want", "need", "please", "sir", "maam", "top", "recent", "ka", "ki",
-                       "kitne", "batao", "dikhao", "chahiye", "number", "naam", "name", "full", "detail"}
+                       "kitne", "batao", "dikhao", "chahiye", "number", "naam", "name", "full", "detail",
+                       "details", "more", "info", "mobile", "email", "phone", "address", "can", "you",
+                       "sirf", "only", "just", "give", "muze", "mujhe", "kya", "hai"}
         words = set(q_lower.replace("'", "").replace("?", "").replace(".", "").replace(",", "").split())
-        names = words - stop_words
-        names = [n for n in names if len(n) > 2]
+        names = [n for n in (words - stop_words) if len(n) > 2]
 
+        hints = []
         if names:
-            return f"User is likely searching for: {', '.join(names)}. Use ILIKE '%name%' for fuzzy matching."
-        return ""
+            hints.append(f"IMPORTANT: User is searching for '{', '.join(names)}'. Search ALL name columns using ILIKE '%{names[0]}%'")
+            hints.append(f"Try columns like: customer_first_name, first_name, name, username, full_name, customer_last_name, last_name")
+            hints.append(f"SELECT * to get all details (phone, email, etc.)")
+        return "\n".join(hints)
 
     def _basic_analysis(self, schema: Dict) -> tuple:
         """Fallback analysis without LLM."""

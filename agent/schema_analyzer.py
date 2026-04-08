@@ -121,11 +121,12 @@ class SchemaAnalyzer:
         all_text = " ".join(table_names + all_columns)
 
         domain_hints = {
+            "sales_crm": ["customer", "lead", "client", "deal", "pipeline", "sales", "crm", "visit", "meeting", "target", "beat", "connect"],
             "healthcare": ["patient", "doctor", "appointment", "diagnosis", "prescription", "medical", "clinic"],
-            "e-commerce": ["product", "order", "cart", "payment", "customer", "shipping", "inventory"],
+            "e-commerce": ["product", "order", "cart", "shipping", "inventory", "catalog", "shop"],
             "education": ["student", "course", "grade", "teacher", "enrollment", "class", "assignment"],
-            "finance": ["account", "transaction", "balance", "ledger", "invoice", "payment"],
-            "hr": ["employee", "department", "salary", "leave", "attendance", "payroll"],
+            "finance": ["ledger", "balance", "debit", "credit", "journal", "fiscal"],
+            "hr": ["employee", "department", "salary", "leave", "attendance", "payroll", "designation"],
             "restaurant": ["menu", "table", "reservation", "dish", "recipe", "ingredient"],
             "real_estate": ["property", "listing", "tenant", "lease", "rent", "landlord"],
             "social_media": ["post", "comment", "like", "follower", "feed", "profile"],
