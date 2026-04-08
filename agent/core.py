@@ -140,74 +140,68 @@ class AgentCore:
         tables_list = self.analysis.get("tables", [])
         domain = self.analysis.get("domain", "business")
         conversation_history = self.memory.get_context_window(session_id, last_n=8)
+        q_lower = question.lower().strip()
 
-        # ─── Find relevant tables for this question ───
+        # ─── Quick greetings (no LLM) ───
+        greetings = {"hi", "hello", "hey", "hii", "hiii", "yo", "sup", "good morning", "good evening", "good afternoon", "thanks", "thank you", "bye", "ok", "okay"}
+        if q_lower.rstrip("!.,") in greetings:
+            msg = "Hello sir/ma'am! Welcome! I'm your AI assistant connected to your database. How can I help you today?"
+            if q_lower in ("thanks", "thank you"):
+                msg = "You're welcome sir/ma'am! Let me know if you need anything else."
+            if q_lower in ("bye",):
+                msg = "Goodbye sir/ma'am! Have a great day!"
+            self.memory.add_message(session_id, "agent", msg)
+            return {"answer": msg, "suggestions": ["Show all customers", "Recent orders", "Top sales this month"], "data": None}
+
+        # ─── Find relevant tables ───
         t0 = time.time()
         relevant_schema = self.schema_analyzer.find_relevant_tables(question, max_tables=10)
         if not relevant_schema:
             relevant_schema = self.schema_analyzer.schema_summary[:2000]
         logger.info(f"  [1] Find tables: {round(time.time()-t0, 1)}s")
 
-        # ─── Single smart LLM call: understand + SQL + answer ───
+        # ─── Step 1: Generate SQL (always try to query) ───
         t0 = time.time()
-        system_prompt = f"""You are a friendly, professional AI assistant for a {domain} business. Your name is AI Agent.
+        sql_prompt = f"""Generate a PostgreSQL query for this question. ALWAYS generate SQL even if unsure.
 
-PERSONALITY:
-- Always greet politely: "Hello sir/ma'am!", "Sure sir!", "Of course!"
-- Be conversational and warm
-- Use the user's name if you know it
-- Give specific answers with actual data
-- If you don't find data, say so politely and suggest alternatives
-
-DATABASE SCHEMA (use ONLY these exact table and column names in double quotes):
+DATABASE TABLES (use ONLY these exact names in double quotes):
 {relevant_schema[:2500]}
 
 CONVERSATION HISTORY:
-{conversation_history if conversation_history else "No previous messages."}
+{conversation_history if conversation_history else "None"}
 
-INSTRUCTIONS:
-1. First understand what the user wants
-2. If they need data, generate a PostgreSQL query using ONLY tables/columns from the schema above
-3. ALL table and column names MUST be in double quotes: SELECT "column" FROM "table"
-4. For follow-up questions like "i want full detail" or "tell me more", use context from conversation history
-5. Add LIMIT 20 to queries
-6. If the question is conversational (greeting, thanks, etc.), set sql to empty
+USER QUESTION: "{question}"
 
-Respond ONLY with valid JSON:
-{{"sql": "SELECT ... or empty string if no SQL needed", "message": "your friendly response to the user"}}"""
+RULES:
+- ALWAYS generate a SELECT query. Do NOT say you can't find data.
+- Use ONLY table and column names from the schema above
+- ALL names in double quotes: SELECT "col" FROM "table"
+- For names/people: use ILIKE '%name%' for fuzzy search
+- For "tell me more" or "full detail": look at conversation history and expand the previous query with SELECT *
+- Add LIMIT 20
+- If truly no SQL possible (pure greeting), respond with just: NONE
+
+Return ONLY the SQL query. Nothing else."""
 
         try:
-            raw = llm_chat(f"{system_prompt}\n\nUser: {question}", temperature=0.2)
-            logger.info(f"  [2] LLM response: {round(time.time()-t0, 1)}s")
-
-            # Parse JSON
-            raw = raw.strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            start_idx = raw.find("{")
-            end_idx = raw.rfind("}") + 1
-            if start_idx != -1 and end_idx > start_idx:
-                parsed = _json.loads(raw[start_idx:end_idx])
-            else:
-                parsed = {"sql": "", "message": raw}
+            sql = llm_chat(sql_prompt, temperature=0.1)
+            logger.info(f"  [2] SQL generated: {round(time.time()-t0, 1)}s → {sql[:80]}")
         except Exception as e:
             logger.error(f"  LLM error: {e}")
-            parsed = {"sql": "", "message": f"I'm sorry, I had trouble processing that. Could you try asking in a different way?"}
-
-        sql = parsed.get("sql", "").strip()
-        message = parsed.get("message", "")
+            sql = ""
 
         # Clean SQL
+        sql = sql.strip()
         if sql.startswith("```"):
-            sql = sql.split("```")[1].strip()
+            lines = sql.split("```")
+            sql = lines[1] if len(lines) > 1 else ""
             if sql.startswith("sql"):
-                sql = sql[3:].strip()
+                sql = sql[3:]
+            sql = sql.strip()
         if sql.upper() in ("NONE", "N/A", ""):
             sql = ""
 
-        # ─── Execute SQL ───
+        # ─── Step 2: Execute SQL ───
         rows = []
         if sql:
             t0 = time.time()
@@ -218,13 +212,11 @@ Respond ONLY with valid JSON:
             else:
                 db_error = query_result.get("error", "")
                 logger.warning(f"  [3] DB error, retrying: {db_error[:100]}")
-                # Auto-retry
                 try:
-                    fix_raw = llm_chat(f"""SQL failed: {db_error[:300]}
+                    fix_sql = llm_chat(f"""Fix this SQL. Error: {db_error[:300]}
 Query: {sql}
-Schema: {relevant_schema[:2000]}
-Fix it. Use exact table/column names in double quotes. Return ONLY the SQL.""", temperature=0.1)
-                    fix_sql = fix_raw.strip()
+Schema: {relevant_schema[:1500]}
+Use exact names in double quotes. Return ONLY fixed SQL.""", temperature=0.1).strip()
                     if fix_sql.startswith("```"):
                         fix_sql = fix_sql.split("```")[1].strip()
                         if fix_sql.startswith("sql"):
@@ -232,39 +224,53 @@ Fix it. Use exact table/column names in double quotes. Return ONLY the SQL.""", 
                     query_result = self.action_engine.execute({"sql": fix_sql, "params": {}})
                     if query_result.get("success"):
                         rows = query_result.get("rows", [])
-                        sql = fix_sql
                         logger.info(f"  [3b] Retry success: {len(rows)} rows")
                 except Exception:
                     pass
 
-        # ─── Build final answer with data ───
-        if rows and not message:
-            message = f"Here are the results I found - {len(rows)} records."
-        elif rows:
-            # LLM already gave a message, enhance with data context
-            t0 = time.time()
-            try:
-                data_answer = llm_chat(f"""You are a friendly AI assistant. The user asked: "{question}"
+        # ─── Step 3: Build conversational answer with data ───
+        t0 = time.time()
+        data_section = ""
+        if rows:
+            data_section = f"\n\nData from database ({len(rows)} rows):\n{_json.dumps(rows[:10], indent=2, default=str)}"
+            if len(rows) > 10:
+                data_section += f"\n(+ {len(rows)-10} more rows)"
+        elif sql:
+            data_section = "\n\nThe query returned no results."
 
-Database returned {len(rows)} rows:
-{_json.dumps(rows[:10], indent=2, default=str)}
+        answer_prompt = f"""You are a polite, professional AI assistant. Always address the user as "sir" or "ma'am".
 
-Give a warm, helpful answer. Start with "Sure sir!" or "Here you go!" etc.
-Mention specific names, numbers, and details from the data.
-If the query was about a person, include their contact details.
-Keep it conversational and informative. No JSON, just plain text.""", temperature=0.3)
-                message = data_answer
-                logger.info(f"  [4] Answer built: {round(time.time()-t0, 1)}s")
-            except Exception:
-                pass
+The user asked: "{question}"
 
-        if not message:
-            message = "I'm sorry sir/ma'am, I couldn't find relevant data for your question. Could you try rephrasing it?"
+Conversation history:
+{conversation_history if conversation_history else "None"}
+{data_section}
+
+INSTRUCTIONS:
+- Start your reply with "Sure sir!" or "Here you go sir!" or "Of course sir!" etc.
+- If data was found: mention SPECIFIC names, numbers, phone numbers, emails from the data
+- If someone asked about a person: list their full name, phone, email, address, etc.
+- If no data found: politely say "I couldn't find that in the database sir" and suggest what they can search
+- Be warm, helpful, specific
+- Use bullet points for multiple items
+- Keep it concise but complete
+
+Reply in plain text (no JSON):"""
+
+        try:
+            answer = llm_chat(answer_prompt, temperature=0.3)
+            logger.info(f"  [4] Answer built: {round(time.time()-t0, 1)}s")
+        except Exception as e:
+            logger.error(f"  Answer error: {e}")
+            if rows:
+                answer = f"Sure sir! I found {len(rows)} records for you."
+            else:
+                answer = "I'm sorry sir, I had trouble processing that. Could you try rephrasing your question?"
 
         suggestions = ["Show all customers", "Recent orders", "Top sales this month"]
 
         response = {
-            "answer": message,
+            "answer": answer,
             "suggestions": suggestions,
             "data": rows if rows else None,
         }
