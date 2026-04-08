@@ -177,33 +177,21 @@ class AgentCore:
         t0 = time.time()
         business = self.db_brain.summary or f"A {domain} business"
 
-        sql_prompt = f"""You are a PostgreSQL expert. Business: {business}
+        sql_prompt = f"""Business: {business}
 
+DATABASE:
 {db_context}
 {people_ref}
 {orders_ref}
 
-CONVERSATION HISTORY:
+CONVERSATION:
 {conversation_history if conversation_history else "None"}
 
-USER QUESTION: "{question}"
+Question: "{question}"
 
-THINK STEP BY STEP:
-1. Is this a greeting (hi/hello/thanks/bye)? → Return: NONE
-2. Is user asking about a person? → Use PEOPLE TABLES above, search with ILIKE '%name%'
-3. Is user asking "her/his/their"? → Look at conversation history, find who they mean, search again
-4. Is user asking about orders/sales? → Use ORDER TABLES above, ORDER BY "created_at" DESC
-5. Is user asking to count something? → Use COUNT(*)
-6. Remove 's from names: "aanchal's" → search for "aanchal"
+Generate a PostgreSQL query. Use double quotes on all table and column names. Use ONLY names from the schema above. LIMIT 20. If no SQL needed, say NONE.
 
-SQL RULES:
-- ALL table and column names MUST be in double quotes
-- Use ONLY exact table/column names from above
-- ILIKE for name search (case insensitive)
-- LIMIT 20
-- If greeting/chat → NONE
-
-Return ONLY the SQL. Nothing else."""
+SQL:"""
 
         sql = ""
         try:
@@ -235,12 +223,11 @@ Return ONLY the SQL. Nothing else."""
                 db_error = query_result.get("error", "")
                 logger.warning(f"  [3] DB error, retrying: {db_error[:80]}")
                 try:
-                    fix_sql = llm_chat(f"""Fix this SQL error.
-Error: {db_error[:300]}
+                    fix_sql = llm_chat(f"""Fix this SQL. Error: {db_error[:300]}
 Query: {sql}
 {db_context[:1500]}
-{people_info}
-ALL names in double quotes. Return ONLY the fixed SQL.""", temperature=0.1).strip()
+{people_ref}
+Double quote all names. Return ONLY the fixed SQL.""", temperature=0.1).strip()
                     if fix_sql.startswith("```"):
                         fix_sql = fix_sql.split("```")[1].strip()
                         if fix_sql.startswith("sql"):
@@ -262,26 +249,15 @@ ALL names in double quotes. Return ONLY the fixed SQL.""", temperature=0.1).stri
         elif sql:
             data_section = "\n\nQuery returned no results."
 
-        answer_prompt = f"""You are a polite AI assistant for a {domain} business. Always say "sir" or "ma'am".
+        answer_prompt = f"""You are a polite AI assistant for a {domain} business. Address user as "sir" or "ma'am".
+
+Conversation:
+{conversation_history if conversation_history else "None"}
 
 User: "{question}"
-
-Conversation history:
-{conversation_history if conversation_history else "None"}
 {data_section}
 
-REPLY RULES:
-- Start with "Sure sir!", "Here you go sir!", etc.
-- If data found: show specific names, phone numbers, emails, amounts from the data
-- If about a person: list their name, phone, email, address, company
-- If "her/his number": use conversation history to find who, then show their phone
-- If no data: say so politely and suggest what to try
-- If general chat: respond naturally
-- Use **bold** for key info
-- Use bullet points for lists
-- Keep it concise
-
-Plain text only (no JSON):"""
+Give a helpful, specific answer using the actual data. Be concise. Use **bold** and bullet points."""
 
         try:
             answer = llm_chat(answer_prompt, temperature=0.3)
