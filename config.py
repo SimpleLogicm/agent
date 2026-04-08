@@ -14,7 +14,7 @@ class Settings:
     # LLM Provider: "groq" (fast, free cloud) or "ollama" (slow, 100% local)
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
     # Ollama settings (used when LLM_PROVIDER=ollama)
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
