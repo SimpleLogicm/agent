@@ -346,19 +346,65 @@
     document.body.appendChild(container);
   }
 
-  function addMessage(text, type, suggestions) {
-    const messages = document.getElementById("ai-agent-messages");
-    const typing = document.getElementById("ai-agent-typing");
+  function formatMarkdown(text) {
+    if (!text) return "";
+    return text
+      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*(.*?)\*/g, "<em>$1</em>")
+      .replace(/`(.*?)`/g, "<code style='background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px'>$1</code>")
+      .replace(/\n- /g, "\n&bull; ")
+      .replace(/\n\d+\.\s/g, function(m) { return "\n" + m.trim() + " "; })
+      .replace(/\n/g, "<br>");
+  }
 
-    const msg = document.createElement("div");
+  function buildDataTable(data) {
+    if (!data || !data.length) return "";
+    var keys = Object.keys(data[0]);
+    var html = '<div style="overflow-x:auto;margin-top:8px">';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:11px">';
+    html += '<thead><tr>';
+    keys.forEach(function(k) {
+      html += '<th style="text-align:left;padding:4px 8px;background:#f3f4f6;border-bottom:2px solid #e5e7eb;font-size:10px;color:#6b7280;white-space:nowrap">' + k + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    data.slice(0, 20).forEach(function(row) {
+      html += '<tr>';
+      keys.forEach(function(k) {
+        var val = row[k];
+        if (val === null || val === undefined) val = "-";
+        if (typeof val === "object") val = JSON.stringify(val);
+        var display = String(val).length > 30 ? String(val).substring(0, 30) + "..." : String(val);
+        html += '<td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + display + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    if (data.length > 20) html += '<div style="font-size:10px;color:#9ca3af;padding:4px">Showing 20 of ' + data.length + ' rows</div>';
+    html += '</div>';
+    return html;
+  }
+
+  function addMessage(text, type, suggestions, data) {
+    var messages = document.getElementById("ai-agent-messages");
+    var typing = document.getElementById("ai-agent-typing");
+
+    var msg = document.createElement("div");
     msg.className = "ai-msg ai-msg-" + type;
-    msg.textContent = text;
+
+    if (type === "agent") {
+      msg.innerHTML = formatMarkdown(text);
+      if (data && data.length) {
+        msg.innerHTML += buildDataTable(data);
+      }
+    } else {
+      msg.textContent = text;
+    }
 
     if (suggestions && suggestions.length > 0 && type === "agent") {
-      const sugDiv = document.createElement("div");
+      var sugDiv = document.createElement("div");
       sugDiv.className = "ai-msg-suggestions";
       suggestions.forEach(function (s) {
-        const btn = document.createElement("button");
+        var btn = document.createElement("button");
         btn.className = "ai-suggestion-btn";
         btn.textContent = s;
         btn.onclick = function () {
@@ -426,7 +472,8 @@
         addMessage(
           data.answer || "I couldn't process that request.",
           "agent",
-          data.suggestions || []
+          data.suggestions || [],
+          data.data || null
         );
       })
       .catch(function (err) {
