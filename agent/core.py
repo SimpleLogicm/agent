@@ -161,9 +161,69 @@ class AgentCore:
             db_context = self.schema_analyzer.schema_summary[:2000]
         logger.info(f"  [1] Brain lookup: {round(time.time()-t0, 1)}s")
 
-        # ─── Step 1: Generate SQL (always try to query) ───
-        t0 = time.time()
-        sql_prompt = f"""Generate a PostgreSQL query for this question.
+        # ─── Check if this is a person search ───
+        # If searching for a name, do direct SQL search across key tables (skip LLM)
+        stop_words = {"show", "tell", "find", "get", "list", "how", "many", "count", "what", "who",
+                       "where", "all", "me", "about", "the", "is", "are", "my", "our", "do", "have",
+                       "i", "want", "need", "please", "sir", "maam", "top", "recent", "ka", "ki",
+                       "kitne", "batao", "dikhao", "chahiye", "number", "naam", "name", "full", "detail",
+                       "details", "more", "info", "mobile", "email", "phone", "address", "can", "you",
+                       "sirf", "only", "just", "give", "muze", "mujhe", "kya", "hai", "then", "check",
+                       "in", "table", "user", "users", "customer", "customers", "order", "orders",
+                       "data", "database", "connected", "search", "look", "looking", "for",
+                       "from", "with", "this", "that", "also", "too", "total", "much"}
+        words = set(q_lower.replace("'", "").replace("?", "").replace(".", "").replace(",", "").split())
+        potential_names = [w for w in words - stop_words if len(w) > 2]
+
+        rows = []
+        sql = ""
+
+        if potential_names:
+            # Direct person search - discover which tables have name columns
+            name = potential_names[0]
+            logger.info(f"  [2] Person search for '{name}'...")
+            t0 = time.time()
+
+            # Find tables that have name-like columns (auto-discover, not hardcoded)
+            name_column_patterns = ["name", "first_name", "last_name", "username", "full_name",
+                                    "customer_first", "customer_last", "client_name", "contact_name"]
+
+            # Search in customer/user/employee category tables first
+            priority_cats = ["customers", "users", "employees", "contacts", "leads"]
+            search_tables = []
+            for cat in priority_cats:
+                for table in self.db_brain.table_map.get(cat, []):
+                    if table in raw_schema:
+                        search_tables.append(table)
+            # Limit to prevent too many queries
+            search_tables = search_tables[:10]
+
+            for table in search_tables:
+                actual_cols = [c["name"] for c in raw_schema[table].get("columns", [])]
+                # Find columns that look like they contain names
+                searchable = [c for c in actual_cols if any(p in c.lower() for p in name_column_patterns)]
+                if not searchable:
+                    continue
+
+                conditions = " OR ".join([f'"{c}" ILIKE \'%{name}%\'' for c in searchable])
+                sql = f'SELECT * FROM "{table}" WHERE {conditions} LIMIT 20'
+
+                try:
+                    result = self.action_engine.execute({"sql": sql, "params": {}})
+                    if result.get("success") and result.get("rows"):
+                        rows = result["rows"]
+                        logger.info(f"  [2] Found {len(rows)} in {table} ({round(time.time()-t0, 1)}s)")
+                        break
+                except Exception:
+                    continue
+
+            if not rows:
+                logger.info(f"  [2] Person not found in key tables ({round(time.time()-t0, 1)}s)")
+
+        # ─── If person search didn't find anything, use LLM for SQL ───
+        if not rows:
+            t0 = time.time()
+            sql_prompt = f"""Generate a PostgreSQL query for this question.
 
 {db_context}
 
@@ -177,57 +237,56 @@ RULES:
 - ALWAYS generate a SELECT query
 - Use ONLY table and column names from the schema above
 - ALL table and column names MUST be in double quotes: SELECT "col" FROM "table"
-- For searching names/people: use ILIKE '%name%' on name/email/phone columns
+- For searching names/people: use ILIKE '%name%' on ALL name-like columns
 - For "tell me more" or "full detail": look at conversation history and expand with SELECT *
 - Add LIMIT 20
 - If purely conversational (hi/thanks/bye): respond with NONE
 
 Return ONLY the raw SQL. Nothing else."""
 
-        try:
-            sql = llm_chat(sql_prompt, temperature=0.1)
-            logger.info(f"  [2] SQL generated: {round(time.time()-t0, 1)}s → {sql[:80]}")
-        except Exception as e:
-            logger.error(f"  LLM error: {e}")
-            sql = ""
+            try:
+                sql = llm_chat(sql_prompt, temperature=0.1)
+                logger.info(f"  [2] SQL generated: {round(time.time()-t0, 1)}s → {sql[:80]}")
+            except Exception as e:
+                logger.error(f"  LLM error: {e}")
+                sql = ""
 
-        # Clean SQL
-        sql = sql.strip()
-        if sql.startswith("```"):
-            lines = sql.split("```")
-            sql = lines[1] if len(lines) > 1 else ""
-            if sql.startswith("sql"):
-                sql = sql[3:]
+            # Clean SQL
             sql = sql.strip()
-        if sql.upper() in ("NONE", "N/A", ""):
-            sql = ""
+            if sql.startswith("```"):
+                lines = sql.split("```")
+                sql = lines[1] if len(lines) > 1 else ""
+                if sql.startswith("sql"):
+                    sql = sql[3:]
+                sql = sql.strip()
+            if sql.upper() in ("NONE", "N/A", ""):
+                sql = ""
 
-        # ─── Step 2: Execute SQL ───
-        rows = []
-        if sql:
-            t0 = time.time()
-            query_result = self.action_engine.execute({"sql": sql, "params": {}})
-            if query_result.get("success"):
-                rows = query_result.get("rows", [])
-                logger.info(f"  [3] DB execute: {round(time.time()-t0, 1)}s → {len(rows)} rows")
-            else:
-                db_error = query_result.get("error", "")
-                logger.warning(f"  [3] DB error, retrying: {db_error[:100]}")
-                try:
-                    fix_sql = llm_chat(f"""Fix this SQL. Error: {db_error[:300]}
+            # Execute
+            if sql:
+                t0 = time.time()
+                query_result = self.action_engine.execute({"sql": sql, "params": {}})
+                if query_result.get("success"):
+                    rows = query_result.get("rows", [])
+                    logger.info(f"  [3] DB execute: {round(time.time()-t0, 1)}s → {len(rows)} rows")
+                else:
+                    db_error = query_result.get("error", "")
+                    logger.warning(f"  [3] DB error, retrying: {db_error[:100]}")
+                    try:
+                        fix_sql = llm_chat(f"""Fix this SQL. Error: {db_error[:300]}
 Query: {sql}
 {db_context[:1500]}
 Use exact table/column names in double quotes. Return ONLY fixed SQL.""", temperature=0.1).strip()
-                    if fix_sql.startswith("```"):
-                        fix_sql = fix_sql.split("```")[1].strip()
-                        if fix_sql.startswith("sql"):
-                            fix_sql = fix_sql[3:].strip()
-                    query_result = self.action_engine.execute({"sql": fix_sql, "params": {}})
-                    if query_result.get("success"):
-                        rows = query_result.get("rows", [])
-                        logger.info(f"  [3b] Retry success: {len(rows)} rows")
-                except Exception:
-                    pass
+                        if fix_sql.startswith("```"):
+                            fix_sql = fix_sql.split("```")[1].strip()
+                            if fix_sql.startswith("sql"):
+                                fix_sql = fix_sql[3:].strip()
+                        query_result = self.action_engine.execute({"sql": fix_sql, "params": {}})
+                        if query_result.get("success"):
+                            rows = query_result.get("rows", [])
+                            logger.info(f"  [3b] Retry success: {len(rows)} rows")
+                    except Exception:
+                        pass
 
         # ─── Step 3: Build conversational answer with data ───
         t0 = time.time()
