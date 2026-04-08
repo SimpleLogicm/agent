@@ -18,6 +18,7 @@ from agent.response_builder import ResponseBuilder
 from agent.codebase_analyzer import CodebaseAnalyzer
 from agent.business_logic import BusinessLogicLearner
 from agent.memory import ConversationMemory
+from agent.db_learner import DBLearner
 from config import settings
 
 DB_CONNECTORS = {
@@ -42,6 +43,7 @@ class AgentCore:
         self.codebase_analyzer = CodebaseAnalyzer()
         self.business_logic = BusinessLogicLearner()
         self.memory = ConversationMemory()
+        self.db_learner = DBLearner()
 
         self.is_ready = False
         self.db_type: str = ""
@@ -80,15 +82,12 @@ class AgentCore:
 
         self.analysis = self.schema_analyzer.analyze(raw_schema)
 
-        # Skip business logic learning for large DBs (do it lazily)
-        if len(tables) < 50:
-            self.business_info = self.business_logic.learn(
-                domain=self.analysis.get("domain", "general"),
-                schema=raw_schema,
-            )
-        else:
-            self.business_info = {"workflows_learned": 0, "workflows": []}
-            self.business_logic.domain = self.analysis.get("domain", "general")
+        # Learn database structure (one-time, saved locally)
+        from agent.llm import chat as llm_chat
+        self.db_learner.learn(raw_schema, llm_chat)
+
+        self.business_info = {"workflows_learned": 0, "workflows": []}
+        self.business_logic.domain = self.analysis.get("domain", "general")
 
         self.is_ready = True
 
@@ -153,12 +152,14 @@ class AgentCore:
             self.memory.add_message(session_id, "agent", msg)
             return {"answer": msg, "suggestions": ["Show all customers", "Recent orders", "Top sales this month"], "data": None}
 
-        # ─── Find relevant tables ───
+        # ─── Find relevant tables using DB map ───
         t0 = time.time()
-        relevant_schema = self.schema_analyzer.find_relevant_tables(question, max_tables=10)
+        raw_schema = self.schema_analyzer.schema
+        relevant_tables = self.db_learner.find_tables_for_question(question, raw_schema)
+        relevant_schema = self.db_learner.get_context_for_question(question, raw_schema)
         if not relevant_schema:
             relevant_schema = self.schema_analyzer.schema_summary[:2000]
-        logger.info(f"  [1] Find tables: {round(time.time()-t0, 1)}s")
+        logger.info(f"  [1] Find tables: {round(time.time()-t0, 1)}s → {relevant_tables}")
 
         # ─── Step 1: Generate SQL (always try to query) ───
         t0 = time.time()
