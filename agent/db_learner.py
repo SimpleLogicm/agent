@@ -188,30 +188,45 @@ EXACT table names. JSON only."""
         if not merged_map:
             merged_map, merged_info = self._basic_analysis(schema)
 
+        # Generate business summary (LLM understands what this system is about)
+        try:
+            cat_overview = ", ".join([f"{cat}({len(tables)})" for cat, tables in merged_map.items() if tables])
+            sample_tables = []
+            for pt in self.people_search_tables[:3]:
+                sample_tables.append(f"{pt['table']}: {pt.get('sample_names', [''])[0] if pt.get('sample_names') else ''} ({pt.get('row_count',0)} records)")
+
+            summary_prompt = f"""This database has {len(schema)} tables.
+Categories: {cat_overview}
+Sample data tables: {'; '.join(sample_tables)}
+
+In 2-3 sentences, describe what this business/system does. What kind of company uses this database? What are the main things tracked? Be specific."""
+
+            self.summary = llm_chat_fn(summary_prompt, temperature=0.2)
+            logger.info(f"  Business understood: {self.summary[:80]}...")
+        except Exception:
+            self.summary = f"A {list(merged_map.keys())[0] if merged_map else 'general'} management system with {len(schema)} tables."
+
         # Build the knowledge document
-        knowledge_parts = [f"DATABASE KNOWLEDGE (learned from {len(schema)} tables)\n"]
+        knowledge_parts = [f"BUSINESS: {self.summary}\n"]
+        knowledge_parts.append(f"DATABASE: {len(schema)} tables in {len(merged_map)} categories\n")
 
-        # Summary
-        categories = [f"{cat}: {len(tables)} tables" for cat, tables in merged_map.items() if tables]
-        knowledge_parts.append(f"Categories: {', '.join(categories)}\n")
-
-        # Table details
+        # Key tables per category (only show top 3 per category to keep it small)
         for cat, tables in merged_map.items():
             if not tables:
                 continue
-            knowledge_parts.append(f"\n=== {cat.upper()} ===")
-            for t in tables:
+            top_tables = tables[:3]
+            table_details = []
+            for t in top_tables:
                 info = merged_info.get(t, {})
-                purpose = info.get("purpose", "")
                 search_cols = info.get("search_columns", [])
                 display_cols = info.get("display_columns", [])
-                knowledge_parts.append(f'  Table: "{t}"')
-                if purpose:
-                    knowledge_parts.append(f"    Purpose: {purpose}")
+                detail = f'"{t}"'
                 if search_cols:
-                    knowledge_parts.append(f'    Search by: {", ".join(search_cols)}')
+                    detail += f' (search: {", ".join(search_cols)})'
                 if display_cols:
-                    knowledge_parts.append(f'    Show: {", ".join(display_cols)}')
+                    detail += f' (show: {", ".join(display_cols[:5])})'
+                table_details.append(detail)
+            knowledge_parts.append(f"{cat}: {'; '.join(table_details)}")
 
         self.knowledge = "\n".join(knowledge_parts)
         self.table_map = merged_map
