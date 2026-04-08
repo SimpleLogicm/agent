@@ -65,10 +65,11 @@ class DBBrain:
             for t in merged_map.get(cat, []):
                 people_tables.add(t)
 
-        # Also scan tables with name-like columns
+        # Also scan ALL tables that have name-like columns (not just from categories)
         for table_name, info in schema.items():
             cols = [c["name"].lower() for c in info.get("columns", [])]
-            if any(any(p in c for p in ["name", "first_name", "last_name", "email", "mobile", "phone", "username"]) for c in cols):
+            if any(any(p in c for p in ["first_name", "last_name", "username", "full_name",
+                                         "customer_first", "customer_last", "contact_name"]) for c in cols):
                 people_tables.add(table_name)
 
         # Build people search tables from schema + sample data
@@ -76,11 +77,18 @@ class DBBrain:
         scanned = 0
 
         # Name-like column patterns to look for
-        name_patterns = ["name", "first_name", "last_name", "username", "full_name",
+        name_patterns = ["first_name", "last_name", "username", "full_name",
                          "customer_first", "customer_last", "client_name", "contact_name",
-                         "user_name", "display_name", "title"]
+                         "user_name", "display_name"]
 
-        for table_name in list(people_tables)[:30]:
+        # Prioritize tables that likely have real people (sort important ones first)
+        priority_keywords = ["appuser", "customer", "employee", "client", "contact", "lead", "staff", "member"]
+        sorted_tables = sorted(people_tables, key=lambda t: (
+            -sum(1 for kw in priority_keywords if kw in t.lower()) * 100,
+            t
+        ))
+
+        for table_name in sorted_tables:
             try:
                 info = schema.get(table_name, {})
                 cols = info.get("columns", [])
