@@ -65,35 +65,16 @@ class DBBrain:
             for t in merged_map.get(cat, []):
                 people_tables.add(t)
 
-        # Also scan ALL tables that have name-like columns (not just from categories)
-        for table_name, info in schema.items():
-            cols = [c["name"].lower() for c in info.get("columns", [])]
-            if any(any(p in c for p in ["first_name", "last_name", "username", "full_name",
-                                         "customer_first", "customer_last", "contact_name"]) for c in cols):
-                people_tables.add(table_name)
-
-        # Build people search tables from schema + sample data
+        # Scan ALL tables in the database for person-name columns
+        # No hardcoded table names - purely based on column structure
         self.people_search_tables = []
         scanned = 0
 
-        # Name-like column patterns to look for
-        name_patterns = ["first_name", "last_name", "username", "full_name",
-                         "customer_first", "customer_last", "client_name", "contact_name",
-                         "user_name", "display_name"]
-
-        # Prioritize tables that likely have real people (sort important ones first)
-        priority_keywords = ["appuser", "customer", "employee", "client", "contact", "lead", "staff", "member"]
-        sorted_tables = sorted(people_tables, key=lambda t: (
-            -sum(1 for kw in priority_keywords if kw in t.lower()) * 100,
-            t
-        ))
-
-        for table_name in sorted_tables:
+        for table_name, info in schema.items():
             try:
-                info = schema.get(table_name, {})
                 cols = info.get("columns", [])
 
-                # Find searchable columns by TYPE and NAME (not by sample data value)
+                # Look at every column: is it a TEXT/VARCHAR that could hold a person's name?
                 searchable_cols = []
                 display_cols = []
 
@@ -101,20 +82,42 @@ class DBBrain:
                     c_name = col["name"]
                     c_lower = c_name.lower()
                     c_type = col.get("type", "").upper()
-
-                    # Is this a text column with a name-like name?
                     is_text = any(t in c_type for t in ["VARCHAR", "TEXT", "CHAR"])
-                    if is_text and any(p in c_lower for p in name_patterns):
-                        searchable_cols.append(c_name)
 
-                    # Display columns
-                    if any(p in c_lower for p in ["name", "email", "mobile", "phone", "address",
-                                                   "company", "city", "status", "username", "designation"]):
+                    if not is_text:
+                        continue
+
+                    # Check if column name contains any word that means "name of a person"
+                    name_words = c_lower.replace("_", " ").split()
+                    has_name_indicator = False
+                    for w in name_words:
+                        if w in ("name", "first", "last", "username", "full"):
+                            has_name_indicator = True
+                            break
+
+                    if has_name_indicator:
+                        # Exclude columns that are clearly not person names
+                        not_person = ("table_name", "file_name", "task_name", "module_name",
+                                      "category_name", "subcategory_name", "activity_name",
+                                      "product_name", "scheme_name", "report_name",
+                                      "field_name", "column_name", "app_name", "model_name",
+                                      "permission_name", "group_name", "content_type",
+                                      "sku_name", "brand_name", "bank_name", "branch_name",
+                                      "hotel_name", "shop_name", "city_name", "state_name",
+                                      "country_name", "document_name")
+                        if c_lower not in not_person:
+                            searchable_cols.append(c_name)
+
+                    # Display columns (any useful info)
+                    display_words = ("name", "email", "mobile", "phone", "address",
+                                     "company", "city", "status", "username", "designation")
+                    if any(w in c_lower for w in display_words):
                         display_cols.append(c_name)
 
                 if not searchable_cols:
                     continue
 
+                # Verify this table has actual data
                 scanned += 1
                 row_count = 0
                 sample_name = ""
@@ -131,13 +134,15 @@ class DBBrain:
                 except Exception:
                     pass
 
-                self.people_search_tables.append({
-                    "table": table_name,
-                    "search_columns": searchable_cols,
-                    "display_columns": display_cols[:10],
-                    "row_count": row_count,
-                    "sample_names": [sample_name] if sample_name else [],
-                })
+                # Only include tables that have data
+                if row_count > 0:
+                    self.people_search_tables.append({
+                        "table": table_name,
+                        "search_columns": searchable_cols,
+                        "display_columns": display_cols[:10],
+                        "row_count": row_count,
+                        "sample_names": [sample_name] if sample_name else [],
+                    })
 
                 merged_info[table_name]["search_columns"] = searchable_cols
                 merged_info[table_name]["display_columns"] = display_cols[:10]
