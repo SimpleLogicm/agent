@@ -140,51 +140,70 @@ class AgentCore:
         conversation_history = self.memory.get_context_window(session_id, last_n=8)
         raw_schema = self.schema_analyzer.schema
 
-        # ─── Brain finds relevant tables ───
+        # ─── Brain builds context ───
         t0 = time.time()
         db_context = self.db_brain.get_context(question, raw_schema)
         if not db_context:
             db_context = self.schema_analyzer.schema_summary[:2000]
 
-        # Add people search tables info so LLM knows where to find people
-        people_info = ""
+        # Build clear people tables reference (sorted by records, most first)
+        people_ref = ""
         if self.db_brain.people_search_tables:
-            top_people_tables = self.db_brain.people_search_tables[:5]
-            people_info = "\n\nTABLES WITH PEOPLE DATA (use these to search for any person):\n"
-            for pt in top_people_tables:
-                people_info += f'  "{pt["table"]}" → search columns: {pt["search_columns"]} ({pt.get("row_count", 0)} records)\n'
+            people_ref = "\n\nPEOPLE TABLES (sorted by record count, use first one that fits):\n"
+            for pt in self.db_brain.people_search_tables[:8]:
+                cols = pt.get("search_columns", [])
+                display = pt.get("display_columns", [])
+                sample = pt.get("sample_names", [""])[0] if pt.get("sample_names") else ""
+                people_ref += f'  "{pt["table"]}" ({pt.get("row_count", 0)} records)\n'
+                people_ref += f'    Search: {", ".join([chr(34)+c+chr(34) for c in cols])}\n'
+                if display:
+                    people_ref += f'    Display: {", ".join([chr(34)+c+chr(34) for c in display[:6]])}\n'
+                if sample:
+                    people_ref += f'    Sample: {sample}\n'
+
+        # Build orders tables reference
+        orders_ref = ""
+        order_tables = self.db_brain.table_map.get("orders", [])
+        if order_tables:
+            orders_ref = "\n\nORDER TABLES:\n"
+            for t in order_tables[:3]:
+                if t in raw_schema:
+                    cols = [c["name"] for c in raw_schema[t].get("columns", [])[:10]]
+                    orders_ref += f'  "{t}" columns: {", ".join(cols)}\n'
 
         logger.info(f"  [1] Brain lookup: {round(time.time()-t0, 1)}s")
 
         # ─── ONE LLM call: generate SQL ───
         t0 = time.time()
-        sql_prompt = f"""You are a PostgreSQL expert for a {domain} business database.
+        business = self.db_brain.summary or f"A {domain} business"
+
+        sql_prompt = f"""You are a PostgreSQL expert. Business: {business}
 
 {db_context}
-{people_info}
+{people_ref}
+{orders_ref}
 
 CONVERSATION HISTORY:
 {conversation_history if conversation_history else "None"}
 
 USER QUESTION: "{question}"
 
-UNDERSTAND THE QUESTION:
-- If user mentions a person's name → search in people tables using ILIKE '%name%'
-- If user says "her", "his", "their" → look at conversation history to find who they mean
-- If user asks about "orders", "sales" → use order/sales tables
-- If user says "last order" → ORDER BY "created_at" DESC LIMIT 1
-- If user says "aanchal's number" → search for 'aanchal' (remove 's from the name)
-- If conversational only (hi/thanks/bye) → respond with: NONE
+THINK STEP BY STEP:
+1. Is this a greeting (hi/hello/thanks/bye)? → Return: NONE
+2. Is user asking about a person? → Use PEOPLE TABLES above, search with ILIKE '%name%'
+3. Is user asking "her/his/their"? → Look at conversation history, find who they mean, search again
+4. Is user asking about orders/sales? → Use ORDER TABLES above, ORDER BY "created_at" DESC
+5. Is user asking to count something? → Use COUNT(*)
+6. Remove 's from names: "aanchal's" → search for "aanchal"
 
 SQL RULES:
-- ALL table and column names in double quotes: SELECT "col" FROM "table"
-- Use ONLY exact names from the schema above
-- For names: use ILIKE '%name%' (handles case-insensitive partial match)
-- For multiple people tables: pick the one with most records
-- Add LIMIT 20
-- For JOINs: check foreign key relationships in schema
+- ALL table and column names MUST be in double quotes
+- Use ONLY exact table/column names from above
+- ILIKE for name search (case insensitive)
+- LIMIT 20
+- If greeting/chat → NONE
 
-Return ONLY the SQL query. Nothing else."""
+Return ONLY the SQL. Nothing else."""
 
         sql = ""
         try:
