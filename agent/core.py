@@ -199,21 +199,20 @@ class AgentCore:
 
         # ─── LLM Call 1: Generate SQL ───
         t0 = time.time()
-        sql_prompt = f"""You are a PostgreSQL expert. Generate a SQL query for this question.
+        sql_prompt = f"""Generate a PostgreSQL query. Use ONLY the exact table and column names from the schema below. Do NOT invent table names.
 
-Schema:
-{relevant_schema[:2500]}
+{relevant_schema[:3000]}
 
 Question: "{question}"
 
-CRITICAL RULES:
-1. ALWAYS wrap table names in double quotes. Example: SELECT * FROM "Connect_connect_customers"
-2. ALWAYS wrap column names in double quotes. Example: SELECT "name", "email" FROM "Connect_connect_customers"
-3. Use LIMIT 20
-4. Use proper JOINs with double-quoted names
-5. If no SQL needed, respond with: NONE
+RULES:
+- ONLY use table and column names that appear EXACTLY in the schema above
+- ALL table names must be in double quotes: "table_name"
+- ALL column names must be in double quotes: "column_name"
+- Add LIMIT 20
+- If the question is conversational (not data-related), respond with: NONE
 
-Respond ONLY with the raw SQL query. No explanation. No markdown."""
+Respond with ONLY the SQL. No explanation."""
 
         try:
             sql = llm_chat(sql_prompt, temperature=0.1)
@@ -245,16 +244,15 @@ Respond ONLY with the raw SQL query. No explanation. No markdown."""
                 logger.warning(f"  [3] DB error, retrying: {db_error[:100]}")
                 # Auto-retry: send error to LLM to fix the SQL
                 try:
-                    fix_prompt = f"""The SQL query failed with this error:
-{db_error[:500]}
+                    fix_prompt = f"""SQL query failed:
+Error: {db_error[:300]}
+Query: {sql}
 
-Original query: {sql}
-
-Schema:
+Available tables and columns (use ONLY these exact names):
 {relevant_schema[:2000]}
 
-RULES: ALWAYS use double quotes around ALL table and column names. Example: SELECT "name" FROM "Connect_connect_customers"
-Fix the query. Respond with ONLY the corrected SQL. No explanation."""
+Fix the query. Use ONLY exact table/column names from above in double quotes.
+Respond with ONLY the corrected SQL."""
                     sql = llm_chat(fix_prompt, temperature=0.1)
                     sql = sql.strip()
                     if sql.startswith("```"):

@@ -45,45 +45,71 @@ class SchemaAnalyzer:
             lines.append(f"  FK: {', '.join(fk['columns'])} -> {fk['referred_table']}({', '.join(fk['referred_columns'])})")
         return "\n".join(lines)
 
-    def find_relevant_tables(self, question: str, max_tables: int = 15) -> str:
+    def build_keyword_index(self):
+        """Build a keyword → table mapping for fast search."""
+        self._keyword_index = {}
+        for table_name, table_info in self.schema.items():
+            # Extract keywords from table name
+            parts = table_name.lower().replace("-", "_").split("_")
+            for part in parts:
+                if len(part) > 2:
+                    if part not in self._keyword_index:
+                        self._keyword_index[part] = set()
+                    self._keyword_index[part].add(table_name)
+            # Extract keywords from column names
+            for col in table_info.get("columns", []):
+                col_parts = col["name"].lower().replace("-", "_").split("_")
+                for part in col_parts:
+                    if len(part) > 2:
+                        if part not in self._keyword_index:
+                            self._keyword_index[part] = set()
+                        self._keyword_index[part].add(table_name)
+
+    def find_relevant_tables(self, question: str, max_tables: int = 10) -> str:
         """Find tables relevant to a question and return their detailed schema."""
+        if not hasattr(self, '_keyword_index') or not self._keyword_index:
+            self.build_keyword_index()
+
         q_lower = question.lower()
-        scored = []
-        for table_name in self.schema:
-            score = 0
-            t_lower = table_name.lower().replace("_", " ")
-            # Check if any word in question matches table name
-            for word in q_lower.split():
-                if len(word) > 2 and word in t_lower:
-                    score += 10
-            # Check column names
-            for col in self.schema[table_name].get("columns", []):
-                col_lower = col["name"].lower().replace("_", " ")
-                for word in q_lower.split():
-                    if len(word) > 2 and word in col_lower:
-                        score += 5
-            # Boost tables with more rows (likely important)
-            row_count = self.schema[table_name].get("row_count", 0)
-            if row_count > 100:
-                score += 2
-            if row_count > 1000:
-                score += 3
-            if score > 0:
-                scored.append((table_name, score))
+        words = [w.strip("?.,!") for w in q_lower.split() if len(w.strip("?.,!")) > 2]
 
-        # Sort by relevance
-        scored.sort(key=lambda x: x[1], reverse=True)
-        relevant = [t[0] for t in scored[:max_tables]]
+        # Score tables by keyword match
+        scores = {}
+        for word in words:
+            # Direct keyword match
+            if word in self._keyword_index:
+                for table in self._keyword_index[word]:
+                    scores[table] = scores.get(table, 0) + 10
+            # Partial match
+            for keyword, tables in self._keyword_index.items():
+                if word in keyword or keyword in word:
+                    for table in tables:
+                        scores[table] = scores.get(table, 0) + 3
 
-        # If no match found, return top tables by row count
+        # Sort by score
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        relevant = [t[0] for t in ranked[:max_tables]]
+
+        # Fallback: pick first N tables if no match
         if not relevant:
-            by_rows = sorted(self.schema.items(), key=lambda x: x[1].get("row_count", 0), reverse=True)
-            relevant = [t[0] for t in by_rows[:max_tables]]
+            relevant = list(self.schema.keys())[:max_tables]
 
-        details = []
+        # Build clean schema for LLM
+        lines = []
         for t in relevant:
-            details.append(self.get_table_detail(t))
-        return "\n\n".join(details)
+            info = self.schema.get(t, {})
+            cols = info.get("columns", [])
+            col_details = []
+            for c in cols:
+                pk = " PRIMARY KEY" if c.get("primary_key") else ""
+                col_details.append(f'  "{c["name"]}" {c.get("type", "TEXT")}{pk}')
+            fks = info.get("foreign_keys", [])
+            fk_lines = []
+            for fk in fks:
+                fk_lines.append(f'  FOREIGN KEY ("{", ".join(fk["columns"])}") REFERENCES "{fk["referred_table"]}"')
+            lines.append(f'TABLE "{t}" (\n' + ",\n".join(col_details) + ("\n" + "\n".join(fk_lines) if fk_lines else "") + "\n)")
+
+        return "\n\n".join(lines)
 
     def _detect_domain(self, schema: dict) -> str:
         table_names = [t.lower() for t in schema.keys()]
