@@ -18,7 +18,7 @@ from agent.response_builder import ResponseBuilder
 from agent.codebase_analyzer import CodebaseAnalyzer
 from agent.business_logic import BusinessLogicLearner
 from agent.memory import ConversationMemory
-from agent.db_learner import DBLearner
+from agent.db_learner import DBBrain
 from config import settings
 
 DB_CONNECTORS = {
@@ -43,7 +43,7 @@ class AgentCore:
         self.codebase_analyzer = CodebaseAnalyzer()
         self.business_logic = BusinessLogicLearner()
         self.memory = ConversationMemory()
-        self.db_learner = DBLearner()
+        self.db_brain = DBBrain()
 
         self.is_ready = False
         self.db_type: str = ""
@@ -82,9 +82,9 @@ class AgentCore:
 
         self.analysis = self.schema_analyzer.analyze(raw_schema)
 
-        # Learn database structure (one-time, saved locally)
+        # Build deep understanding of database (one-time, saved locally)
         from agent.llm import chat as llm_chat
-        self.db_learner.learn(raw_schema, llm_chat)
+        self.db_brain.learn(raw_schema, self.connector, llm_chat)
 
         self.business_info = {"workflows_learned": 0, "workflows": []}
         self.business_logic.domain = self.analysis.get("domain", "general")
@@ -152,37 +152,37 @@ class AgentCore:
             self.memory.add_message(session_id, "agent", msg)
             return {"answer": msg, "suggestions": ["Show all customers", "Recent orders", "Top sales this month"], "data": None}
 
-        # ─── Find relevant tables using DB map ───
+        # ─── Find relevant tables using brain ───
         t0 = time.time()
         raw_schema = self.schema_analyzer.schema
-        relevant_tables = self.db_learner.find_tables_for_question(question, raw_schema)
-        relevant_schema = self.db_learner.get_context_for_question(question, raw_schema)
-        if not relevant_schema:
-            relevant_schema = self.schema_analyzer.schema_summary[:2000]
-        logger.info(f"  [1] Find tables: {round(time.time()-t0, 1)}s → {relevant_tables}")
+        db_context = self.db_brain.get_context(question, raw_schema)
+        search_hint = self.db_brain.get_search_hint(question)
+        if not db_context:
+            db_context = self.schema_analyzer.schema_summary[:2000]
+        logger.info(f"  [1] Brain lookup: {round(time.time()-t0, 1)}s")
 
         # ─── Step 1: Generate SQL (always try to query) ───
         t0 = time.time()
-        sql_prompt = f"""Generate a PostgreSQL query for this question. ALWAYS generate SQL even if unsure.
+        sql_prompt = f"""Generate a PostgreSQL query for this question.
 
-DATABASE TABLES (use ONLY these exact names in double quotes):
-{relevant_schema[:2500]}
+{db_context}
 
 CONVERSATION HISTORY:
 {conversation_history if conversation_history else "None"}
 
 USER QUESTION: "{question}"
+{search_hint}
 
 RULES:
-- ALWAYS generate a SELECT query. Do NOT say you can't find data.
+- ALWAYS generate a SELECT query
 - Use ONLY table and column names from the schema above
-- ALL names in double quotes: SELECT "col" FROM "table"
-- For names/people: use ILIKE '%name%' for fuzzy search
-- For "tell me more" or "full detail": look at conversation history and expand the previous query with SELECT *
+- ALL table and column names MUST be in double quotes: SELECT "col" FROM "table"
+- For searching names/people: use ILIKE '%name%' on name/email/phone columns
+- For "tell me more" or "full detail": look at conversation history and expand with SELECT *
 - Add LIMIT 20
-- If truly no SQL possible (pure greeting), respond with just: NONE
+- If purely conversational (hi/thanks/bye): respond with NONE
 
-Return ONLY the SQL query. Nothing else."""
+Return ONLY the raw SQL. Nothing else."""
 
         try:
             sql = llm_chat(sql_prompt, temperature=0.1)
@@ -216,8 +216,8 @@ Return ONLY the SQL query. Nothing else."""
                 try:
                     fix_sql = llm_chat(f"""Fix this SQL. Error: {db_error[:300]}
 Query: {sql}
-Schema: {relevant_schema[:1500]}
-Use exact names in double quotes. Return ONLY fixed SQL.""", temperature=0.1).strip()
+{db_context[:1500]}
+Use exact table/column names in double quotes. Return ONLY fixed SQL.""", temperature=0.1).strip()
                     if fix_sql.startswith("```"):
                         fix_sql = fix_sql.split("```")[1].strip()
                         if fix_sql.startswith("sql"):

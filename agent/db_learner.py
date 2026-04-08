@@ -1,256 +1,365 @@
 """
-DB Learner - Analyzes the database ONCE on connect and creates a smart map.
-Saves locally so it doesn't need to re-learn on restart.
+DB Brain - The agent's deep understanding of the database.
 
-The map tells the agent:
-- What each table is for (customers, orders, users, etc.)
-- Which tables are related
-- What category each table belongs to
-- Which table to use for common questions
+On first connect:
+  1. Reads ALL tables, columns, foreign keys
+  2. Reads SAMPLE DATA from key tables
+  3. Builds a complete knowledge document (like a human reading a manual)
+  4. Saves this "brain" locally as db_brain.json
+
+On every question:
+  The brain already knows:
+  - What each table stores (with examples)
+  - Which table to use for customers, orders, users, etc.
+  - Actual names/values in the database
+  - How tables relate to each other
 """
 
 import os
 import json
 import logging
 import time
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger("agent")
 
-DB_MAP_FILE = "db_map.json"
+BRAIN_FILE = "db_brain.json"
 
 
-class DBLearner:
+class DBBrain:
     def __init__(self):
-        self.db_map: Dict[str, Any] = {}
-        self.category_tables: Dict[str, List[str]] = {}
-        self.table_purposes: Dict[str, str] = {}
+        self.knowledge: str = ""        # Full understanding text
+        self.table_map: Dict = {}       # category → [tables]
+        self.table_info: Dict = {}      # table → {purpose, key_columns, sample_values}
+        self.relationships: List = []    # [{from, to, via}]
+        self.summary: str = ""          # One-paragraph summary of the whole DB
 
-    def learn(self, schema: Dict[str, Any], llm_chat_fn, force: bool = False) -> Dict:
-        """Learn the database structure. Uses LLM to understand table purposes."""
+    def learn(self, schema: Dict, connector, llm_chat_fn, force: bool = False) -> Dict:
+        """Build deep understanding of the database."""
 
-        # Check if we already have a saved map
-        if not force and os.path.exists(DB_MAP_FILE):
-            saved = self._load_map()
-            if saved and len(saved.get("table_purposes", {})) > 0:
-                self.db_map = saved
-                self.table_purposes = saved.get("table_purposes", {})
-                self.category_tables = saved.get("category_tables", {})
-                logger.info(f"  Loaded saved DB map ({len(self.table_purposes)} tables mapped)")
-                return self.db_map
+        # Check saved brain
+        if not force and os.path.exists(BRAIN_FILE):
+            saved = self._load()
+            if saved and saved.get("knowledge"):
+                self.knowledge = saved["knowledge"]
+                self.table_map = saved.get("table_map", {})
+                self.table_info = saved.get("table_info", {})
+                self.relationships = saved.get("relationships", [])
+                self.summary = saved.get("summary", "")
+                logger.info(f"  Loaded brain from file ({len(self.table_info)} tables understood)")
+                return saved
 
-        logger.info(f"  Learning database structure ({len(schema)} tables)...")
+        logger.info(f"  Building brain for {len(schema)} tables...")
+        logger.info(f"  Step 1/3: Reading table structure...")
 
-        # Build compact table list for LLM
-        table_summaries = []
-        for table_name, table_info in schema.items():
-            cols = [c["name"] for c in table_info.get("columns", [])]
-            # Only send first 10 columns to keep prompt small
-            col_str = ", ".join(cols[:10])
-            if len(cols) > 10:
-                col_str += f" (+{len(cols)-10} more)"
-            table_summaries.append(f"{table_name}: {col_str}")
+        # ─── Step 1: Build compact schema description ───
+        table_descriptions = []
+        for table_name, info in schema.items():
+            cols = info.get("columns", [])
+            col_names = [c["name"] for c in cols]
+            fks = info.get("foreign_keys", [])
+            fk_text = ""
+            if fks:
+                fk_parts = [f'{fk["columns"][0]}→{fk["referred_table"]}' for fk in fks if fk.get("columns")]
+                fk_text = f" | FK: {', '.join(fk_parts)}"
+            table_descriptions.append(f"{table_name}: {', '.join(col_names[:12])}{fk_text}")
 
-        # Split into chunks if too many tables (LLM has context limit)
-        chunk_size = 50
-        all_purposes = {}
-        all_categories = {}
+        # ─── Step 2: Read sample data from tables that look important ───
+        logger.info(f"  Step 2/3: Reading sample data from key tables...")
+        sample_data_text = []
+        important_keywords = ["customer", "user", "order", "product", "client", "employee", "sale", "payment", "invoice", "contact", "lead"]
 
-        for i in range(0, len(table_summaries), chunk_size):
-            chunk = table_summaries[i:i + chunk_size]
-            chunk_text = "\n".join(chunk)
+        sampled_tables = []
+        for table_name in schema:
+            t_lower = table_name.lower()
+            if any(kw in t_lower for kw in important_keywords):
+                sampled_tables.append(table_name)
+        # Also add first few tables if none matched
+        if not sampled_tables:
+            sampled_tables = list(schema.keys())[:10]
+        # Limit to 20 tables for sampling
+        sampled_tables = sampled_tables[:20]
 
-            prompt = f"""Analyze these database tables and categorize them.
+        for table_name in sampled_tables:
+            try:
+                rows = connector.get_sample_data(table_name, limit=3)
+                if rows:
+                    sample_data_text.append(f"Sample from {table_name}: {json.dumps(rows[:2], default=str)[:500]}")
+            except Exception:
+                pass
 
-TABLES:
-{chunk_text}
+        # ─── Step 3: Send everything to LLM to build understanding ───
+        logger.info(f"  Step 3/3: AI is analyzing the database...")
 
-For each table, respond with a JSON object:
+        # Split tables into chunks for LLM
+        all_tables_text = "\n".join(table_descriptions)
+
+        # Chunk if too large
+        if len(all_tables_text) > 6000:
+            chunks = []
+            current = ""
+            for line in table_descriptions:
+                if len(current) + len(line) > 5000:
+                    chunks.append(current)
+                    current = line + "\n"
+                else:
+                    current += line + "\n"
+            if current:
+                chunks.append(current)
+        else:
+            chunks = [all_tables_text]
+
+        # Process each chunk
+        all_analysis = []
+        for i, chunk in enumerate(chunks):
+            prompt = f"""You are analyzing a database to build a complete understanding. Study these tables carefully.
+
+TABLES (batch {i+1}/{len(chunks)}):
+{chunk}
+
+{chr(10).join(sample_data_text[:10]) if i == 0 else ""}
+
+Respond with JSON:
 {{
-  "table_purposes": {{
-    "table_name": "one line description of what this table stores"
+  "table_map": {{
+    "customers": ["exact_table_name1"],
+    "orders": ["exact_table_name2"],
+    "products": ["exact_table_name3"],
+    "users": ["exact_table_name4"],
+    "employees": ["exact_table_name5"],
+    "attendance": ["exact_table_name6"],
+    "payments": ["exact_table_name7"],
+    "leads": ["exact_table_name8"],
+    "contacts": ["exact_table_name9"],
+    "settings": ["exact_table_name10"]
   }},
-  "categories": {{
-    "customers": ["table1", "table2"],
-    "orders": ["table3"],
-    "products": ["table4"],
-    "users": ["table5"],
-    "attendance": ["table6"],
-    "finance": ["table7"],
-    "settings": ["table8"],
-    "logs": ["table9"]
+  "table_info": {{
+    "exact_table_name": {{
+      "purpose": "what this table stores",
+      "search_columns": ["name", "email", "phone"],
+      "display_columns": ["name", "email", "phone", "company"]
+    }}
   }}
 }}
 
 RULES:
-- Every table must have a purpose
-- Categories: customers, orders, products, users, employees, attendance, finance, payments, invoices, inventory, settings, logs, notifications, reports, other
-- A table can be in multiple categories
-- Use the EXACT table name as-is
-- Respond ONLY with JSON, no explanation"""
+- Use EXACT table names as they appear above
+- table_map: group tables by what they represent
+- table_info: for each important table, list which columns to search and display
+- Only include tables that exist in the list above
+- Respond ONLY with JSON"""
 
             try:
                 raw = llm_chat_fn(prompt, temperature=0.1)
                 parsed = self._parse_json(raw)
                 if parsed:
-                    purposes = parsed.get("table_purposes", {})
-                    categories = parsed.get("categories", {})
-                    all_purposes.update(purposes)
-                    for cat, tables in categories.items():
-                        if cat not in all_categories:
-                            all_categories[cat] = []
-                        all_categories[cat].extend(tables)
+                    all_analysis.append(parsed)
             except Exception as e:
-                logger.warning(f"  DB learn chunk failed: {e}")
+                logger.warning(f"  Chunk {i+1} analysis failed: {e}")
 
-        # If LLM failed, build basic map from table names
-        if not all_purposes:
-            all_purposes, all_categories = self._build_basic_map(schema)
+        # Merge all analysis
+        merged_map = {}
+        merged_info = {}
+        for analysis in all_analysis:
+            for cat, tables in analysis.get("table_map", {}).items():
+                if cat not in merged_map:
+                    merged_map[cat] = []
+                merged_map[cat].extend(tables)
+            merged_info.update(analysis.get("table_info", {}))
 
-        self.table_purposes = all_purposes
-        self.category_tables = all_categories
-        self.db_map = {
-            "table_purposes": all_purposes,
-            "category_tables": all_categories,
+        # Fallback if LLM failed
+        if not merged_map:
+            merged_map, merged_info = self._basic_analysis(schema)
+
+        # Build the knowledge document
+        knowledge_parts = [f"DATABASE KNOWLEDGE (learned from {len(schema)} tables)\n"]
+
+        # Summary
+        categories = [f"{cat}: {len(tables)} tables" for cat, tables in merged_map.items() if tables]
+        knowledge_parts.append(f"Categories: {', '.join(categories)}\n")
+
+        # Table details
+        for cat, tables in merged_map.items():
+            if not tables:
+                continue
+            knowledge_parts.append(f"\n=== {cat.upper()} ===")
+            for t in tables:
+                info = merged_info.get(t, {})
+                purpose = info.get("purpose", "")
+                search_cols = info.get("search_columns", [])
+                display_cols = info.get("display_columns", [])
+                knowledge_parts.append(f'  Table: "{t}"')
+                if purpose:
+                    knowledge_parts.append(f"    Purpose: {purpose}")
+                if search_cols:
+                    knowledge_parts.append(f'    Search by: {", ".join(search_cols)}')
+                if display_cols:
+                    knowledge_parts.append(f'    Show: {", ".join(display_cols)}')
+
+        self.knowledge = "\n".join(knowledge_parts)
+        self.table_map = merged_map
+        self.table_info = merged_info
+        self.relationships = []
+
+        # Save brain
+        brain_data = {
+            "knowledge": self.knowledge,
+            "table_map": self.table_map,
+            "table_info": self.table_info,
+            "relationships": self.relationships,
+            "summary": self.summary,
             "learned_at": time.time(),
             "total_tables": len(schema),
         }
+        self._save(brain_data)
+        logger.info(f"  Brain built: {len(merged_info)} tables understood, {len(merged_map)} categories")
 
-        # Save locally
-        self._save_map(self.db_map)
-        logger.info(f"  DB map learned: {len(all_purposes)} tables, {len(all_categories)} categories")
+        return brain_data
 
-        return self.db_map
+    def get_context(self, question: str, schema: Dict) -> str:
+        """Get everything the LLM needs to answer this question correctly."""
 
-    def find_tables_for_question(self, question: str, schema: Dict, max_tables: int = 5) -> List[str]:
-        """Find the best tables to query for a given question."""
-        q_lower = question.lower()
+        # Find relevant tables
+        tables = self._find_tables(question, schema)
 
-        # Step 1: Match by category
-        category_keywords = {
-            "customers": ["customer", "client", "buyer", "consumer", "contact"],
-            "orders": ["order", "purchase", "buy", "sale", "transaction", "deal"],
-            "products": ["product", "item", "goods", "inventory", "stock", "catalog"],
-            "users": ["user", "login", "account", "profile", "employee", "staff", "team"],
-            "employees": ["employee", "staff", "team", "worker", "member", "hr"],
-            "attendance": ["attendance", "check-in", "check-out", "present", "absent", "leave", "working hours"],
-            "finance": ["finance", "payment", "invoice", "billing", "amount", "revenue", "expense", "salary"],
-            "payments": ["payment", "pay", "transaction", "receipt", "refund"],
-            "invoices": ["invoice", "bill", "receipt"],
-            "reports": ["report", "analytics", "dashboard", "insight", "summary", "statistics"],
-            "notifications": ["notification", "alert", "message", "email", "sms"],
-        }
+        # Build precise schema for these tables
+        context_parts = []
 
-        matched_categories = set()
-        for cat, keywords in category_keywords.items():
-            for kw in keywords:
-                if kw in q_lower:
-                    matched_categories.add(cat)
+        # Add the relevant knowledge
+        if self.knowledge:
+            context_parts.append("YOUR KNOWLEDGE ABOUT THIS DATABASE:")
+            context_parts.append(self.knowledge[:1500])
+            context_parts.append("")
 
-        # Get tables from matched categories
-        candidate_tables = set()
-        for cat in matched_categories:
-            for table in self.category_tables.get(cat, []):
-                if table in schema:
-                    candidate_tables.add(table)
-
-        # Step 2: Match by person/entity name (search across customer/user tables)
-        # If question mentions a name, prioritize customer and user tables
-        common_data_words = {"show", "tell", "find", "get", "list", "how", "many", "count", "what", "who", "where", "all", "me", "about", "the", "is", "are", "my", "our", "do", "have", "i", "want", "need", "please", "sir", "maam"}
-        question_words = set(q_lower.replace("'", "").replace("?", "").replace(".", "").split())
-        name_words = question_words - common_data_words
-
-        if name_words and not matched_categories:
-            # Likely searching for a person/entity
-            for cat in ["customers", "users", "employees"]:
-                for table in self.category_tables.get(cat, []):
-                    if table in schema:
-                        candidate_tables.add(table)
-
-        # Step 3: Direct table name matching (keyword in table name)
-        for table_name in schema:
-            t_lower = table_name.lower()
-            for word in q_lower.split():
-                if len(word) > 3 and word in t_lower:
-                    candidate_tables.add(table_name)
-
-        # Step 4: If still nothing, use purpose descriptions
-        if not candidate_tables:
-            for table_name, purpose in self.table_purposes.items():
-                if table_name not in schema:
-                    continue
-                purpose_lower = purpose.lower()
-                for word in q_lower.split():
-                    if len(word) > 3 and word in purpose_lower:
-                        candidate_tables.add(table_name)
-
-        # Step 5: Fallback - top tables from main categories
-        if not candidate_tables:
-            for cat in ["customers", "orders", "users", "products"]:
-                for table in self.category_tables.get(cat, [])[:2]:
-                    if table in schema:
-                        candidate_tables.add(table)
-
-        return list(candidate_tables)[:max_tables]
-
-    def get_context_for_question(self, question: str, schema: Dict) -> str:
-        """Get the relevant schema context for a question - ready to send to LLM."""
-        tables = self.find_tables_for_question(question, schema)
-
-        if not tables:
-            return ""
-
-        lines = []
+        # Add exact schema for relevant tables
+        context_parts.append("TABLES TO USE (exact schema):")
         for t in tables:
             info = schema.get(t, {})
             cols = info.get("columns", [])
-            col_details = []
+            col_lines = []
             for c in cols:
                 pk = " PRIMARY KEY" if c.get("primary_key") else ""
-                col_details.append(f'  "{c["name"]}" {c.get("type", "TEXT")}{pk}')
+                col_lines.append(f'  "{c["name"]}" {c.get("type", "TEXT")}{pk}')
             fks = info.get("foreign_keys", [])
-            fk_lines = []
-            for fk in fks:
-                fk_lines.append(f'  FOREIGN KEY ("{", ".join(fk["columns"])}") REFERENCES "{fk["referred_table"]}"')
+            fk_lines = [f'  FK "{fk["columns"][0]}" → "{fk["referred_table"]}"' for fk in fks if fk.get("columns")]
 
-            purpose = self.table_purposes.get(t, "")
-            purpose_line = f" -- {purpose}" if purpose else ""
-            lines.append(f'TABLE "{t}"{purpose_line} (\n' + ",\n".join(col_details) + ("\n" + "\n".join(fk_lines) if fk_lines else "") + "\n)")
+            # Add purpose
+            tinfo = self.table_info.get(t, {})
+            purpose = tinfo.get("purpose", "")
+            purpose_text = f" -- {purpose}" if purpose else ""
 
-        return "\n\n".join(lines)
+            context_parts.append(f'TABLE "{t}"{purpose_text} (')
+            context_parts.append(",\n".join(col_lines))
+            if fk_lines:
+                context_parts.extend(fk_lines)
+            context_parts.append(")")
+            context_parts.append("")
 
-    def _build_basic_map(self, schema: Dict) -> tuple:
-        """Fallback: build map from table names without LLM."""
-        purposes = {}
-        categories = {}
+        return "\n".join(context_parts)
 
-        keyword_to_category = {
-            "customer": "customers", "client": "customers", "buyer": "customers",
-            "order": "orders", "sale": "orders", "purchase": "orders",
-            "product": "products", "item": "products", "catalog": "products",
-            "user": "users", "auth": "users", "login": "users", "account": "users",
-            "employee": "employees", "staff": "employees", "hr": "employees",
-            "attend": "attendance", "leave": "attendance",
-            "payment": "payments", "pay": "payments", "invoice": "invoices",
-            "finance": "finance", "salary": "finance", "expense": "finance",
-            "log": "logs", "audit": "logs", "history": "logs",
-            "notification": "notifications", "alert": "notifications",
-            "setting": "settings", "config": "settings",
-            "report": "reports",
+    def _find_tables(self, question: str, schema: Dict, max_tables: int = 5) -> List[str]:
+        """Find the right tables for a question using the brain's knowledge."""
+        q_lower = question.lower()
+        candidates = set()
+
+        # 1. Category matching
+        cat_keywords = {
+            "customers": ["customer", "client", "buyer", "contact", "lead"],
+            "orders": ["order", "purchase", "sale", "deal", "transaction", "buy"],
+            "products": ["product", "item", "goods", "stock", "inventory", "catalog"],
+            "users": ["user", "login", "account", "profile", "staff", "team", "member"],
+            "employees": ["employee", "staff", "worker", "team", "member", "hr"],
+            "attendance": ["attendance", "check-in", "checkin", "present", "absent", "leave", "working"],
+            "payments": ["payment", "pay", "invoice", "bill", "receipt", "refund", "amount"],
+            "leads": ["lead", "prospect", "inquiry", "enquiry"],
+            "contacts": ["contact", "phone", "mobile", "number", "email", "address"],
         }
 
-        for table_name in schema:
-            t_lower = table_name.lower()
-            purposes[table_name] = f"Table: {table_name}"
+        matched_cats = set()
+        for cat, keywords in cat_keywords.items():
+            for kw in keywords:
+                if kw in q_lower:
+                    matched_cats.add(cat)
 
-            for keyword, category in keyword_to_category.items():
-                if keyword in t_lower:
-                    if category not in categories:
-                        categories[category] = []
-                    if table_name not in categories[category]:
-                        categories[category].append(table_name)
+        for cat in matched_cats:
+            for table in self.table_map.get(cat, []):
+                if table in schema:
+                    candidates.add(table)
 
-        return purposes, categories
+        # 2. Person name search → check customer/user/employee/contact tables
+        stop_words = {"show", "tell", "find", "get", "list", "how", "many", "count", "what", "who",
+                       "where", "all", "me", "about", "the", "is", "are", "my", "our", "do", "have",
+                       "i", "want", "need", "please", "sir", "maam", "top", "recent", "new", "old",
+                       "total", "much", "give", "muze", "mujhe", "ka", "ki", "ke", "hai", "kya",
+                       "kitne", "kitna", "batao", "dikhao", "chahiye", "number", "naam", "name"}
+        words = set(q_lower.replace("'", "").replace("?", "").replace(".", "").replace(",", "").split())
+        potential_names = words - stop_words
+
+        if potential_names and not matched_cats:
+            # Probably searching for a person
+            for cat in ["customers", "users", "employees", "contacts", "leads"]:
+                for table in self.table_map.get(cat, []):
+                    if table in schema:
+                        candidates.add(table)
+
+        # 3. Search by table_info purpose
+        if not candidates:
+            for table, info in self.table_info.items():
+                if table not in schema:
+                    continue
+                purpose = info.get("purpose", "").lower()
+                for word in q_lower.split():
+                    if len(word) > 3 and word in purpose:
+                        candidates.add(table)
+
+        # 4. Fallback
+        if not candidates:
+            for cat in ["customers", "orders", "users"]:
+                for table in self.table_map.get(cat, [])[:2]:
+                    if table in schema:
+                        candidates.add(table)
+
+        return list(candidates)[:max_tables]
+
+    def get_search_hint(self, question: str) -> str:
+        """Get search hints for the SQL generator."""
+        q_lower = question.lower()
+        stop_words = {"show", "tell", "find", "get", "list", "how", "many", "count", "what", "who",
+                       "where", "all", "me", "about", "the", "is", "are", "my", "our", "do", "have",
+                       "i", "want", "need", "please", "sir", "maam", "top", "recent", "ka", "ki",
+                       "kitne", "batao", "dikhao", "chahiye", "number", "naam", "name", "full", "detail"}
+        words = set(q_lower.replace("'", "").replace("?", "").replace(".", "").replace(",", "").split())
+        names = words - stop_words
+        names = [n for n in names if len(n) > 2]
+
+        if names:
+            return f"User is likely searching for: {', '.join(names)}. Use ILIKE '%name%' for fuzzy matching."
+        return ""
+
+    def _basic_analysis(self, schema: Dict) -> tuple:
+        """Fallback analysis without LLM."""
+        table_map = {}
+        table_info = {}
+        kw_to_cat = {
+            "customer": "customers", "client": "customers", "buyer": "customers",
+            "order": "orders", "sale": "orders",
+            "product": "products", "item": "products",
+            "user": "users", "auth": "users",
+            "employee": "employees", "staff": "employees",
+            "attend": "attendance",
+            "payment": "payments", "invoice": "payments",
+            "lead": "leads", "contact": "contacts",
+        }
+        for table in schema:
+            t_lower = table.lower()
+            for kw, cat in kw_to_cat.items():
+                if kw in t_lower:
+                    if cat not in table_map:
+                        table_map[cat] = []
+                    table_map[cat].append(table)
+            cols = [c["name"] for c in schema[table].get("columns", [])]
+            table_info[table] = {"purpose": table, "search_columns": cols[:5], "display_columns": cols[:8]}
+        return table_map, table_info
 
     def _parse_json(self, text: str) -> dict:
         text = text.strip()
@@ -267,16 +376,16 @@ RULES:
                 pass
         return {}
 
-    def _save_map(self, data: dict):
+    def _save(self, data: dict):
         try:
-            with open(DB_MAP_FILE, "w") as f:
+            with open(BRAIN_FILE, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception:
             pass
 
-    def _load_map(self) -> dict:
+    def _load(self) -> dict:
         try:
-            with open(DB_MAP_FILE, "r") as f:
+            with open(BRAIN_FILE, "r") as f:
                 return json.load(f)
         except Exception:
             return {}
