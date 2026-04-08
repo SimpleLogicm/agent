@@ -136,185 +136,140 @@ class AgentCore:
         import json as _json
         from agent.llm import chat as llm_chat
 
-        tables_list = self.analysis.get("tables", [])
         domain = self.analysis.get("domain", "business")
         conversation_history = self.memory.get_context_window(session_id, last_n=8)
-        q_lower = question.lower().strip()
-
-        # ─── Quick greetings (no LLM) ───
-        greetings = {"hi", "hello", "hey", "hii", "hiii", "yo", "sup", "good morning", "good evening", "good afternoon", "thanks", "thank you", "bye", "ok", "okay"}
-        if q_lower.rstrip("!.,") in greetings:
-            msg = "Hello sir/ma'am! Welcome! I'm your AI assistant connected to your database. How can I help you today?"
-            if q_lower in ("thanks", "thank you"):
-                msg = "You're welcome sir/ma'am! Let me know if you need anything else."
-            if q_lower in ("bye",):
-                msg = "Goodbye sir/ma'am! Have a great day!"
-            self.memory.add_message(session_id, "agent", msg)
-            return {"answer": msg, "suggestions": ["Show all customers", "Recent orders", "Top sales this month"], "data": None}
-
-        # ─── Find relevant tables using brain ───
-        t0 = time.time()
         raw_schema = self.schema_analyzer.schema
+
+        # ─── Brain finds relevant tables ───
+        t0 = time.time()
         db_context = self.db_brain.get_context(question, raw_schema)
-        search_hint = self.db_brain.get_search_hint(question)
         if not db_context:
             db_context = self.schema_analyzer.schema_summary[:2000]
+
+        # Add people search tables info so LLM knows where to find people
+        people_info = ""
+        if self.db_brain.people_search_tables:
+            top_people_tables = self.db_brain.people_search_tables[:5]
+            people_info = "\n\nTABLES WITH PEOPLE DATA (use these to search for any person):\n"
+            for pt in top_people_tables:
+                people_info += f'  "{pt["table"]}" → search columns: {pt["search_columns"]} ({pt.get("row_count", 0)} records)\n'
+
         logger.info(f"  [1] Brain lookup: {round(time.time()-t0, 1)}s")
 
-        # ─── Check if this is a person search ───
-        # If searching for a name, do direct SQL search across key tables (skip LLM)
-        stop_words = {"show", "tell", "find", "get", "list", "how", "many", "count", "what", "who",
-                       "where", "all", "me", "about", "the", "is", "are", "my", "our", "do", "have",
-                       "i", "want", "need", "please", "sir", "maam", "top", "recent", "ka", "ki",
-                       "kitne", "batao", "dikhao", "chahiye", "number", "naam", "name", "full", "detail",
-                       "details", "more", "info", "mobile", "email", "phone", "address", "can", "you",
-                       "sirf", "only", "just", "give", "muze", "mujhe", "kya", "hai", "then", "check",
-                       "in", "table", "user", "users", "customer", "customers", "order", "orders",
-                       "data", "database", "connected", "search", "look", "looking", "for",
-                       "from", "with", "this", "that", "also", "too", "total", "much"}
-        words = set(q_lower.replace("'", "").replace("?", "").replace(".", "").replace(",", "").split())
-        potential_names = [w for w in words - stop_words if len(w) > 2]
-
-        rows = []
-        sql = ""
-
-        if potential_names:
-            # Smart person search using brain's pre-discovered people tables
-            name = potential_names[0]
-            logger.info(f"  [2] Person search for '{name}'...")
-            t0 = time.time()
-
-            # Brain already knows which tables have people data and which columns to search
-            for pt in self.db_brain.people_search_tables:
-                table = pt["table"]
-                search_cols = pt.get("search_columns", [])
-                if not search_cols or table not in raw_schema:
-                    continue
-
-                conditions = " OR ".join([f'"{c}" ILIKE \'%{name}%\'' for c in search_cols])
-                sql = f'SELECT * FROM "{table}" WHERE {conditions} LIMIT 20'
-
-                try:
-                    result = self.action_engine.execute({"sql": sql, "params": {}})
-                    if result.get("success") and result.get("rows"):
-                        rows = result["rows"]
-                        logger.info(f"  [2] Found {len(rows)} in {table} ({round(time.time()-t0, 1)}s)")
-                        break
-                except Exception:
-                    continue
-
-            if not rows:
-                logger.info(f"  [2] Person not found in {len(self.db_brain.people_search_tables)} tables ({round(time.time()-t0, 1)}s)")
-
-        # ─── If person search didn't find anything, use LLM for SQL ───
-        if not rows:
-            t0 = time.time()
-            sql_prompt = f"""Generate a PostgreSQL query for this question.
+        # ─── ONE LLM call: generate SQL ───
+        t0 = time.time()
+        sql_prompt = f"""You are a PostgreSQL expert for a {domain} business database.
 
 {db_context}
+{people_info}
 
 CONVERSATION HISTORY:
 {conversation_history if conversation_history else "None"}
 
 USER QUESTION: "{question}"
-{search_hint}
 
-RULES:
-- ALWAYS generate a SELECT query
-- Use ONLY table and column names from the schema above
-- ALL table and column names MUST be in double quotes: SELECT "col" FROM "table"
-- For searching names/people: use ILIKE '%name%' on ALL name-like columns
-- For "tell me more" or "full detail": look at conversation history and expand with SELECT *
+UNDERSTAND THE QUESTION:
+- If user mentions a person's name → search in people tables using ILIKE '%name%'
+- If user says "her", "his", "their" → look at conversation history to find who they mean
+- If user asks about "orders", "sales" → use order/sales tables
+- If user says "last order" → ORDER BY "created_at" DESC LIMIT 1
+- If user says "aanchal's number" → search for 'aanchal' (remove 's from the name)
+- If conversational only (hi/thanks/bye) → respond with: NONE
+
+SQL RULES:
+- ALL table and column names in double quotes: SELECT "col" FROM "table"
+- Use ONLY exact names from the schema above
+- For names: use ILIKE '%name%' (handles case-insensitive partial match)
+- For multiple people tables: pick the one with most records
 - Add LIMIT 20
-- If purely conversational (hi/thanks/bye): respond with NONE
+- For JOINs: check foreign key relationships in schema
 
-Return ONLY the raw SQL. Nothing else."""
+Return ONLY the SQL query. Nothing else."""
 
-            try:
-                sql = llm_chat(sql_prompt, temperature=0.1)
-                logger.info(f"  [2] SQL generated: {round(time.time()-t0, 1)}s → {sql[:80]}")
-            except Exception as e:
-                logger.error(f"  LLM error: {e}")
-                sql = ""
+        sql = ""
+        try:
+            sql = llm_chat(sql_prompt, temperature=0.1)
+            logger.info(f"  [2] SQL generated: {round(time.time()-t0, 1)}s → {sql[:80]}")
+        except Exception as e:
+            logger.error(f"  LLM error: {e}")
 
-            # Clean SQL
+        # Clean SQL
+        sql = sql.strip()
+        if sql.startswith("```"):
+            parts = sql.split("```")
+            sql = parts[1] if len(parts) > 1 else ""
+            if sql.startswith("sql"):
+                sql = sql[3:]
             sql = sql.strip()
-            if sql.startswith("```"):
-                lines = sql.split("```")
-                sql = lines[1] if len(lines) > 1 else ""
-                if sql.startswith("sql"):
-                    sql = sql[3:]
-                sql = sql.strip()
-            if sql.upper() in ("NONE", "N/A", ""):
-                sql = ""
+        if sql.upper() in ("NONE", "N/A", "") or not sql:
+            sql = ""
 
-            # Execute
-            if sql:
-                t0 = time.time()
-                query_result = self.action_engine.execute({"sql": sql, "params": {}})
-                if query_result.get("success"):
-                    rows = query_result.get("rows", [])
-                    logger.info(f"  [3] DB execute: {round(time.time()-t0, 1)}s → {len(rows)} rows")
-                else:
-                    db_error = query_result.get("error", "")
-                    logger.warning(f"  [3] DB error, retrying: {db_error[:100]}")
-                    try:
-                        fix_sql = llm_chat(f"""Fix this SQL. Error: {db_error[:300]}
+        # ─── Execute SQL ───
+        rows = []
+        if sql:
+            t0 = time.time()
+            query_result = self.action_engine.execute({"sql": sql, "params": {}})
+            if query_result.get("success"):
+                rows = query_result.get("rows", [])
+                logger.info(f"  [3] DB execute: {round(time.time()-t0, 1)}s → {len(rows)} rows")
+            else:
+                db_error = query_result.get("error", "")
+                logger.warning(f"  [3] DB error, retrying: {db_error[:80]}")
+                try:
+                    fix_sql = llm_chat(f"""Fix this SQL error.
+Error: {db_error[:300]}
 Query: {sql}
 {db_context[:1500]}
-Use exact table/column names in double quotes. Return ONLY fixed SQL.""", temperature=0.1).strip()
-                        if fix_sql.startswith("```"):
-                            fix_sql = fix_sql.split("```")[1].strip()
-                            if fix_sql.startswith("sql"):
-                                fix_sql = fix_sql[3:].strip()
-                        query_result = self.action_engine.execute({"sql": fix_sql, "params": {}})
-                        if query_result.get("success"):
-                            rows = query_result.get("rows", [])
-                            logger.info(f"  [3b] Retry success: {len(rows)} rows")
-                    except Exception:
-                        pass
+{people_info}
+ALL names in double quotes. Return ONLY the fixed SQL.""", temperature=0.1).strip()
+                    if fix_sql.startswith("```"):
+                        fix_sql = fix_sql.split("```")[1].strip()
+                        if fix_sql.startswith("sql"):
+                            fix_sql = fix_sql[3:].strip()
+                    query_result = self.action_engine.execute({"sql": fix_sql, "params": {}})
+                    if query_result.get("success"):
+                        rows = query_result.get("rows", [])
+                        logger.info(f"  [3b] Retry: {len(rows)} rows")
+                except Exception:
+                    pass
 
-        # ─── Step 3: Build conversational answer with data ───
+        # ─── Build answer ───
         t0 = time.time()
         data_section = ""
         if rows:
-            data_section = f"\n\nData from database ({len(rows)} rows):\n{_json.dumps(rows[:10], indent=2, default=str)}"
+            data_section = f"\n\nDatabase returned {len(rows)} rows:\n{_json.dumps(rows[:10], indent=2, default=str)}"
             if len(rows) > 10:
-                data_section += f"\n(+ {len(rows)-10} more rows)"
+                data_section += f"\n(+ {len(rows)-10} more)"
         elif sql:
-            data_section = "\n\nThe query returned no results."
+            data_section = "\n\nQuery returned no results."
 
-        answer_prompt = f"""You are a polite, friendly AI assistant. You work for a {domain} business. Always say "sir" or "ma'am".
+        answer_prompt = f"""You are a polite AI assistant for a {domain} business. Always say "sir" or "ma'am".
 
-User asked: "{question}"
+User: "{question}"
 
-Previous conversation:
+Conversation history:
 {conversation_history if conversation_history else "None"}
 {data_section}
 
-HOW TO REPLY:
-- Start with a warm greeting: "Sure sir!", "Here you go sir!", "Of course ma'am!"
-- You can CHAT about anything - business advice, greetings, general questions
-- If data was found: list SPECIFIC details (names, phone numbers, emails, amounts)
-- If about a person: show ALL their info - name, phone, email, company, address
-- If no data found: say "I couldn't find that sir, but you could try..." and suggest alternatives
-- If user asks something general (not data): answer conversationally, give your opinion/advice
-- Use **bold** for important names/numbers
+REPLY RULES:
+- Start with "Sure sir!", "Here you go sir!", etc.
+- If data found: show specific names, phone numbers, emails, amounts from the data
+- If about a person: list their name, phone, email, address, company
+- If "her/his number": use conversation history to find who, then show their phone
+- If no data: say so politely and suggest what to try
+- If general chat: respond naturally
+- Use **bold** for key info
 - Use bullet points for lists
-- Be concise but complete
-- End with a helpful follow-up question
+- Keep it concise
 
-Reply in plain text (no JSON):"""
+Plain text only (no JSON):"""
 
         try:
             answer = llm_chat(answer_prompt, temperature=0.3)
-            logger.info(f"  [4] Answer built: {round(time.time()-t0, 1)}s")
+            logger.info(f"  [4] Answer: {round(time.time()-t0, 1)}s")
         except Exception as e:
             logger.error(f"  Answer error: {e}")
-            if rows:
-                answer = f"Sure sir! I found {len(rows)} records for you."
-            else:
-                answer = "I'm sorry sir, I had trouble processing that. Could you try rephrasing your question?"
+            answer = f"Sure sir! I found {len(rows)} records." if rows else "I'm sorry sir, could you rephrase that?"
 
         suggestions = ["Show all customers", "Recent orders", "Top sales this month"]
 
