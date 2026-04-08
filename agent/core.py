@@ -189,9 +189,7 @@ CONVERSATION:
 
 Question: "{question}"
 
-Generate a PostgreSQL query. Use double quotes on all table and column names. Use ONLY names from the schema above. LIMIT 20. If no SQL needed, say NONE.
-
-SQL:"""
+Write ONLY a PostgreSQL query. No explanation. No comments. No text. Just the SQL statement starting with SELECT, or the word NONE if no query is needed. Double-quote all table and column names. LIMIT 20."""
 
         sql = ""
         try:
