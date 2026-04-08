@@ -71,59 +71,74 @@ class DBBrain:
             if any(any(p in c for p in ["name", "first_name", "last_name", "email", "mobile", "phone", "username"]) for c in cols):
                 people_tables.add(table_name)
 
-        # Read sample data from people tables to understand what they actually contain
-        self.people_search_tables = []  # Tables confirmed to have people data
+        # Build people search tables from schema + sample data
+        self.people_search_tables = []
         scanned = 0
-        for table_name in list(people_tables)[:25]:
+
+        # Name-like column patterns to look for
+        name_patterns = ["name", "first_name", "last_name", "username", "full_name",
+                         "customer_first", "customer_last", "client_name", "contact_name",
+                         "user_name", "display_name", "title"]
+
+        for table_name in list(people_tables)[:30]:
             try:
-                rows = connector.get_sample_data(table_name, limit=2)
-                if not rows:
+                info = schema.get(table_name, {})
+                cols = info.get("columns", [])
+
+                # Find searchable columns by TYPE and NAME (not by sample data value)
+                searchable_cols = []
+                display_cols = []
+
+                for col in cols:
+                    c_name = col["name"]
+                    c_lower = c_name.lower()
+                    c_type = col.get("type", "").upper()
+
+                    # Is this a text column with a name-like name?
+                    is_text = any(t in c_type for t in ["VARCHAR", "TEXT", "CHAR"])
+                    if is_text and any(p in c_lower for p in name_patterns):
+                        searchable_cols.append(c_name)
+
+                    # Display columns
+                    if any(p in c_lower for p in ["name", "email", "mobile", "phone", "address",
+                                                   "company", "city", "status", "username", "designation"]):
+                        display_cols.append(c_name)
+
+                if not searchable_cols:
                     continue
 
                 scanned += 1
-                actual_cols = list(rows[0].keys())
+                row_count = 0
+                sample_name = ""
+                try:
+                    row_count = connector.get_row_count(table_name)
+                    if row_count > 0:
+                        rows = connector.get_sample_data(table_name, limit=1)
+                        if rows:
+                            for sc in searchable_cols:
+                                val = rows[0].get(sc)
+                                if val and isinstance(val, str) and len(val) > 1:
+                                    sample_name = val
+                                    break
+                except Exception:
+                    pass
 
-                # Find which columns are searchable (text that looks like names/emails)
-                searchable_cols = []
-                display_cols = []
-                for col_name in actual_cols:
-                    c_lower = col_name.lower()
-                    val = rows[0].get(col_name)
-                    val_str = str(val).lower() if val else ""
+                self.people_search_tables.append({
+                    "table": table_name,
+                    "search_columns": searchable_cols,
+                    "display_columns": display_cols[:10],
+                    "row_count": row_count,
+                    "sample_names": [sample_name] if sample_name else [],
+                })
 
-                    # Is this a name/search column?
-                    if any(p in c_lower for p in ["name", "first", "last", "username", "full_name", "title"]):
-                        if val and isinstance(val, str) and len(val) > 1 and not val.isdigit():
-                            searchable_cols.append(col_name)
-
-                    # Is this a display column (useful info)?
-                    if any(p in c_lower for p in ["name", "email", "mobile", "phone", "address", "company",
-                                                   "city", "status", "type", "date", "created"]):
-                        display_cols.append(col_name)
-
-                if searchable_cols:
-                    row_count = 0
-                    try:
-                        row_count = connector.get_row_count(table_name)
-                    except Exception:
-                        pass
-
-                    self.people_search_tables.append({
-                        "table": table_name,
-                        "search_columns": searchable_cols,
-                        "display_columns": display_cols[:10],
-                        "row_count": row_count,
-                        "sample_names": [str(rows[0].get(searchable_cols[0], ""))],
-                    })
-
-                    merged_info[table_name]["search_columns"] = searchable_cols
-                    merged_info[table_name]["display_columns"] = display_cols[:10]
-                    merged_info[table_name]["row_count"] = row_count
+                merged_info[table_name]["search_columns"] = searchable_cols
+                merged_info[table_name]["display_columns"] = display_cols[:10]
+                merged_info[table_name]["row_count"] = row_count
 
             except Exception:
                 pass
 
-        # Sort people tables by row count (most data first)
+        # Sort by row count (tables with most data first - more likely to have the person)
         self.people_search_tables.sort(key=lambda x: x.get("row_count", 0), reverse=True)
         logger.info(f"  Deep scanned {scanned} tables, {len(self.people_search_tables)} have searchable people data")
 
