@@ -419,12 +419,41 @@
     messages.scrollTop = messages.scrollHeight;
   }
 
+  var _typingInterval = null;
+  var _typingStages = [
+    "Understanding your question",
+    "Searching database",
+    "Analyzing data",
+    "Preparing answer"
+  ];
+
   function showTyping(show) {
     var typing = document.getElementById("ai-agent-typing");
-    typing.style.display = show ? "block" : "none";
     if (show) {
+      typing.style.display = "block";
+      var stageIdx = 0;
+      var typingText = typing.querySelector(".ai-typing-text");
+      if (!typingText) {
+        typingText = document.createElement("div");
+        typingText.className = "ai-typing-text";
+        typingText.style.cssText = "font-size:11px;color:#6b7280;margin-top:4px";
+        typing.appendChild(typingText);
+      }
+      typingText.textContent = _typingStages[0] + "...";
+      _typingInterval = setInterval(function() {
+        stageIdx++;
+        if (stageIdx < _typingStages.length) {
+          typingText.textContent = _typingStages[stageIdx] + "...";
+        }
+      }, 1500);
       var messages = document.getElementById("ai-agent-messages");
       messages.scrollTop = messages.scrollHeight;
+    } else {
+      typing.style.display = "none";
+      if (_typingInterval) {
+        clearInterval(_typingInterval);
+        _typingInterval = null;
+      }
     }
   }
 
