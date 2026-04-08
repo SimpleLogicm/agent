@@ -179,33 +179,19 @@ class AgentCore:
         sql = ""
 
         if potential_names:
-            # Direct person search - discover which tables have name columns
+            # Smart person search using brain's pre-discovered people tables
             name = potential_names[0]
             logger.info(f"  [2] Person search for '{name}'...")
             t0 = time.time()
 
-            # Find tables that have name-like columns (auto-discover, not hardcoded)
-            name_column_patterns = ["name", "first_name", "last_name", "username", "full_name",
-                                    "customer_first", "customer_last", "client_name", "contact_name"]
-
-            # Search in customer/user/employee category tables first
-            priority_cats = ["customers", "users", "employees", "contacts", "leads"]
-            search_tables = []
-            for cat in priority_cats:
-                for table in self.db_brain.table_map.get(cat, []):
-                    if table in raw_schema:
-                        search_tables.append(table)
-            # Limit to prevent too many queries
-            search_tables = search_tables[:10]
-
-            for table in search_tables:
-                actual_cols = [c["name"] for c in raw_schema[table].get("columns", [])]
-                # Find columns that look like they contain names
-                searchable = [c for c in actual_cols if any(p in c.lower() for p in name_column_patterns)]
-                if not searchable:
+            # Brain already knows which tables have people data and which columns to search
+            for pt in self.db_brain.people_search_tables:
+                table = pt["table"]
+                search_cols = pt.get("search_columns", [])
+                if not search_cols or table not in raw_schema:
                     continue
 
-                conditions = " OR ".join([f'"{c}" ILIKE \'%{name}%\'' for c in searchable])
+                conditions = " OR ".join([f'"{c}" ILIKE \'%{name}%\'' for c in search_cols])
                 sql = f'SELECT * FROM "{table}" WHERE {conditions} LIMIT 20'
 
                 try:
@@ -218,7 +204,7 @@ class AgentCore:
                     continue
 
             if not rows:
-                logger.info(f"  [2] Person not found in key tables ({round(time.time()-t0, 1)}s)")
+                logger.info(f"  [2] Person not found in {len(self.db_brain.people_search_tables)} tables ({round(time.time()-t0, 1)}s)")
 
         # ─── If person search didn't find anything, use LLM for SQL ───
         if not rows:

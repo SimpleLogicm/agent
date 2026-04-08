@@ -44,66 +44,105 @@ class DBBrain:
                 self.knowledge = saved["knowledge"]
                 self.table_map = saved.get("table_map", {})
                 self.table_info = saved.get("table_info", {})
+                self.people_search_tables = saved.get("people_search_tables", [])
                 self.relationships = saved.get("relationships", [])
                 self.summary = saved.get("summary", "")
-                logger.info(f"  Loaded brain from file ({len(self.table_info)} tables understood)")
+                logger.info(f"  Loaded brain ({len(self.table_info)} tables, {len(self.people_search_tables)} people tables)")
                 return saved
 
         logger.info(f"  Building brain for {len(schema)} tables...")
 
-        # ─── Step 1: Auto-categorize tables by keywords (NO LLM needed) ───
-        logger.info(f"  Step 1/2: Categorizing tables...")
+        # ─── Step 1: Auto-categorize ALL tables by keywords ───
+        logger.info(f"  Step 1/3: Categorizing tables...")
         merged_map, merged_info = self._basic_analysis(schema)
 
-        # ─── Step 2: Read sample data from key tables ───
-        logger.info(f"  Step 2/2: Reading sample data from key tables...")
-        important_keywords = ["customer", "user", "order", "product", "client", "employee", "sale", "payment", "invoice", "contact", "lead"]
+        # ─── Step 2: Deep scan - read actual data from important tables ───
+        logger.info(f"  Step 2/3: Deep scanning tables (reading actual data)...")
 
-        sampled_tables = []
-        for table_name in schema:
-            t_lower = table_name.lower()
-            if any(kw in t_lower for kw in important_keywords):
-                sampled_tables.append(table_name)
-        if not sampled_tables:
-            sampled_tables = list(schema.keys())[:10]
-        sampled_tables = sampled_tables[:15]
+        # Find ALL tables that could contain people/business data
+        people_tables = set()
+        for cat in ["customers", "users", "employees", "contacts", "leads"]:
+            for t in merged_map.get(cat, []):
+                people_tables.add(t)
 
-        for table_name in sampled_tables:
+        # Also scan tables with name-like columns
+        for table_name, info in schema.items():
+            cols = [c["name"].lower() for c in info.get("columns", [])]
+            if any(any(p in c for p in ["name", "first_name", "last_name", "email", "mobile", "phone", "username"]) for c in cols):
+                people_tables.add(table_name)
+
+        # Read sample data from people tables to understand what they actually contain
+        self.people_search_tables = []  # Tables confirmed to have people data
+        scanned = 0
+        for table_name in list(people_tables)[:25]:
             try:
-                rows = connector.get_sample_data(table_name, limit=3)
-                if rows and table_name in merged_info:
-                    # Store actual column names that have data
-                    cols_with_data = [k for k in rows[0].keys() if rows[0][k] is not None]
-                    merged_info[table_name]["sample_columns"] = cols_with_data[:10]
-                    # Find name-like columns for search
-                    name_cols = [c for c in cols_with_data if any(n in c.lower() for n in ["name", "first", "last", "email", "phone", "mobile", "title", "username"])]
-                    if name_cols:
-                        merged_info[table_name]["search_columns"] = name_cols
+                rows = connector.get_sample_data(table_name, limit=2)
+                if not rows:
+                    continue
+
+                scanned += 1
+                actual_cols = list(rows[0].keys())
+
+                # Find which columns are searchable (text that looks like names/emails)
+                searchable_cols = []
+                display_cols = []
+                for col_name in actual_cols:
+                    c_lower = col_name.lower()
+                    val = rows[0].get(col_name)
+                    val_str = str(val).lower() if val else ""
+
+                    # Is this a name/search column?
+                    if any(p in c_lower for p in ["name", "first", "last", "username", "full_name", "title"]):
+                        if val and isinstance(val, str) and len(val) > 1 and not val.isdigit():
+                            searchable_cols.append(col_name)
+
+                    # Is this a display column (useful info)?
+                    if any(p in c_lower for p in ["name", "email", "mobile", "phone", "address", "company",
+                                                   "city", "status", "type", "date", "created"]):
+                        display_cols.append(col_name)
+
+                if searchable_cols:
+                    row_count = 0
+                    try:
+                        row_count = connector.get_row_count(table_name)
+                    except Exception:
+                        pass
+
+                    self.people_search_tables.append({
+                        "table": table_name,
+                        "search_columns": searchable_cols,
+                        "display_columns": display_cols[:10],
+                        "row_count": row_count,
+                        "sample_names": [str(rows[0].get(searchable_cols[0], ""))],
+                    })
+
+                    merged_info[table_name]["search_columns"] = searchable_cols
+                    merged_info[table_name]["display_columns"] = display_cols[:10]
+                    merged_info[table_name]["row_count"] = row_count
+
             except Exception:
                 pass
 
-        # ─── ONE LLM call: just enhance the auto-categorized map ───
-        try:
-            # Build compact list of categorized tables
-            cat_summary = []
-            for cat, tables in merged_map.items():
-                cat_summary.append(f"{cat}: {', '.join(tables[:5])}")
-            cat_text = "\n".join(cat_summary)
+        # Sort people tables by row count (most data first)
+        self.people_search_tables.sort(key=lambda x: x.get("row_count", 0), reverse=True)
+        logger.info(f"  Deep scanned {scanned} tables, {len(self.people_search_tables)} have searchable people data")
 
-            # Send only uncategorized tables to LLM
+        # ─── Step 3: ONE LLM call for uncategorized tables ───
+        logger.info(f"  Step 3/3: Finalizing...")
+        try:
             uncategorized = [t for t in schema if not any(t in tables for tables in merged_map.values())]
             if uncategorized and len(uncategorized) < 100:
-                uncat_text = "\n".join([f"{t}: {', '.join([c['name'] for c in schema[t].get('columns', [])][:8])}" for t in uncategorized[:50]])
+                cat_summary = [f"{cat}: {', '.join(tables[:3])}" for cat, tables in merged_map.items() if tables]
+                uncat_text = "\n".join([f"{t}: {', '.join([c['name'] for c in schema[t].get('columns', [])][:6])}" for t in uncategorized[:50]])
 
-                prompt = f"""Already categorized:
-{cat_text}
+                prompt = f"""Already categorized:\n{chr(10).join(cat_summary)}
 
 Categorize these remaining tables:
 {uncat_text}
 
-Respond with JSON: {{"table_map": {{"category": ["table1", "table2"]}}}}
+Respond with JSON: {{"table_map": {{"category": ["table1"]}}}}
 Categories: customers, orders, products, users, employees, attendance, finance, payments, leads, contacts, settings, logs, reports, other
-Use EXACT table names. JSON only."""
+EXACT table names. JSON only."""
 
                 raw = llm_chat_fn(prompt, temperature=0.1)
                 parsed = self._parse_json(raw)
@@ -114,9 +153,8 @@ Use EXACT table names. JSON only."""
                         for t in tables:
                             if t in schema and t not in merged_map[cat]:
                                 merged_map[cat].append(t)
-                    logger.info(f"  LLM categorized {len(uncategorized)} extra tables")
-        except Exception as e:
-            logger.warning(f"  LLM enhancement skipped: {e}")
+        except Exception:
+            pass
 
         # Fallback if LLM failed
         if not merged_map:
@@ -157,13 +195,14 @@ Use EXACT table names. JSON only."""
             "knowledge": self.knowledge,
             "table_map": self.table_map,
             "table_info": self.table_info,
+            "people_search_tables": self.people_search_tables,
             "relationships": self.relationships,
             "summary": self.summary,
             "learned_at": time.time(),
             "total_tables": len(schema),
         }
         self._save(brain_data)
-        logger.info(f"  Brain built: {len(merged_info)} tables understood, {len(merged_map)} categories")
+        logger.info(f"  Brain built: {len(merged_info)} tables understood, {len(merged_map)} categories, {len(self.people_search_tables)} people tables")
 
         return brain_data
 
