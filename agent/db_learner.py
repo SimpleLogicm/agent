@@ -50,23 +50,13 @@ class DBBrain:
                 return saved
 
         logger.info(f"  Building brain for {len(schema)} tables...")
-        logger.info(f"  Step 1/3: Reading table structure...")
 
-        # ─── Step 1: Build compact schema description ───
-        table_descriptions = []
-        for table_name, info in schema.items():
-            cols = info.get("columns", [])
-            col_names = [c["name"] for c in cols]
-            fks = info.get("foreign_keys", [])
-            fk_text = ""
-            if fks:
-                fk_parts = [f'{fk["columns"][0]}→{fk["referred_table"]}' for fk in fks if fk.get("columns")]
-                fk_text = f" | FK: {', '.join(fk_parts)}"
-            table_descriptions.append(f"{table_name}: {', '.join(col_names[:12])}{fk_text}")
+        # ─── Step 1: Auto-categorize tables by keywords (NO LLM needed) ───
+        logger.info(f"  Step 1/2: Categorizing tables...")
+        merged_map, merged_info = self._basic_analysis(schema)
 
-        # ─── Step 2: Read sample data from tables that look important ───
-        logger.info(f"  Step 2/3: Reading sample data from key tables...")
-        sample_data_text = []
+        # ─── Step 2: Read sample data from key tables ───
+        logger.info(f"  Step 2/2: Reading sample data from key tables...")
         important_keywords = ["customer", "user", "order", "product", "client", "employee", "sale", "payment", "invoice", "contact", "lead"]
 
         sampled_tables = []
@@ -74,98 +64,59 @@ class DBBrain:
             t_lower = table_name.lower()
             if any(kw in t_lower for kw in important_keywords):
                 sampled_tables.append(table_name)
-        # Also add first few tables if none matched
         if not sampled_tables:
             sampled_tables = list(schema.keys())[:10]
-        # Limit to 20 tables for sampling
-        sampled_tables = sampled_tables[:20]
+        sampled_tables = sampled_tables[:15]
 
         for table_name in sampled_tables:
             try:
                 rows = connector.get_sample_data(table_name, limit=3)
-                if rows:
-                    sample_data_text.append(f"Sample from {table_name}: {json.dumps(rows[:2], default=str)[:500]}")
+                if rows and table_name in merged_info:
+                    # Store actual column names that have data
+                    cols_with_data = [k for k in rows[0].keys() if rows[0][k] is not None]
+                    merged_info[table_name]["sample_columns"] = cols_with_data[:10]
+                    # Find name-like columns for search
+                    name_cols = [c for c in cols_with_data if any(n in c.lower() for n in ["name", "first", "last", "email", "phone", "mobile", "title", "username"])]
+                    if name_cols:
+                        merged_info[table_name]["search_columns"] = name_cols
             except Exception:
                 pass
 
-        # ─── Step 3: Send everything to LLM to build understanding ───
-        logger.info(f"  Step 3/3: AI is analyzing the database...")
+        # ─── ONE LLM call: just enhance the auto-categorized map ───
+        try:
+            # Build compact list of categorized tables
+            cat_summary = []
+            for cat, tables in merged_map.items():
+                cat_summary.append(f"{cat}: {', '.join(tables[:5])}")
+            cat_text = "\n".join(cat_summary)
 
-        # Split tables into chunks for LLM
-        all_tables_text = "\n".join(table_descriptions)
+            # Send only uncategorized tables to LLM
+            uncategorized = [t for t in schema if not any(t in tables for tables in merged_map.values())]
+            if uncategorized and len(uncategorized) < 100:
+                uncat_text = "\n".join([f"{t}: {', '.join([c['name'] for c in schema[t].get('columns', [])][:8])}" for t in uncategorized[:50]])
 
-        # Chunk if too large
-        if len(all_tables_text) > 6000:
-            chunks = []
-            current = ""
-            for line in table_descriptions:
-                if len(current) + len(line) > 5000:
-                    chunks.append(current)
-                    current = line + "\n"
-                else:
-                    current += line + "\n"
-            if current:
-                chunks.append(current)
-        else:
-            chunks = [all_tables_text]
+                prompt = f"""Already categorized:
+{cat_text}
 
-        # Process each chunk
-        all_analysis = []
-        for i, chunk in enumerate(chunks):
-            prompt = f"""You are analyzing a database to build a complete understanding. Study these tables carefully.
+Categorize these remaining tables:
+{uncat_text}
 
-TABLES (batch {i+1}/{len(chunks)}):
-{chunk}
+Respond with JSON: {{"table_map": {{"category": ["table1", "table2"]}}}}
+Categories: customers, orders, products, users, employees, attendance, finance, payments, leads, contacts, settings, logs, reports, other
+Use EXACT table names. JSON only."""
 
-{chr(10).join(sample_data_text[:10]) if i == 0 else ""}
-
-Respond with JSON:
-{{
-  "table_map": {{
-    "customers": ["exact_table_name1"],
-    "orders": ["exact_table_name2"],
-    "products": ["exact_table_name3"],
-    "users": ["exact_table_name4"],
-    "employees": ["exact_table_name5"],
-    "attendance": ["exact_table_name6"],
-    "payments": ["exact_table_name7"],
-    "leads": ["exact_table_name8"],
-    "contacts": ["exact_table_name9"],
-    "settings": ["exact_table_name10"]
-  }},
-  "table_info": {{
-    "exact_table_name": {{
-      "purpose": "what this table stores",
-      "search_columns": ["name", "email", "phone"],
-      "display_columns": ["name", "email", "phone", "company"]
-    }}
-  }}
-}}
-
-RULES:
-- Use EXACT table names as they appear above
-- table_map: group tables by what they represent
-- table_info: for each important table, list which columns to search and display
-- Only include tables that exist in the list above
-- Respond ONLY with JSON"""
-
-            try:
                 raw = llm_chat_fn(prompt, temperature=0.1)
                 parsed = self._parse_json(raw)
                 if parsed:
-                    all_analysis.append(parsed)
-            except Exception as e:
-                logger.warning(f"  Chunk {i+1} analysis failed: {e}")
-
-        # Merge all analysis
-        merged_map = {}
-        merged_info = {}
-        for analysis in all_analysis:
-            for cat, tables in analysis.get("table_map", {}).items():
-                if cat not in merged_map:
-                    merged_map[cat] = []
-                merged_map[cat].extend(tables)
-            merged_info.update(analysis.get("table_info", {}))
+                    for cat, tables in parsed.get("table_map", {}).items():
+                        if cat not in merged_map:
+                            merged_map[cat] = []
+                        for t in tables:
+                            if t in schema and t not in merged_map[cat]:
+                                merged_map[cat].append(t)
+                    logger.info(f"  LLM categorized {len(uncategorized)} extra tables")
+        except Exception as e:
+            logger.warning(f"  LLM enhancement skipped: {e}")
 
         # Fallback if LLM failed
         if not merged_map:
