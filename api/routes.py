@@ -113,7 +113,8 @@ def debug_table(table_name: str):
 def debug_brain():
     """Debug: show what the brain learned."""
     return {
-        "table_map": agent.db_brain.table_map,
+        "table_map": {k: v[:3] for k, v in agent.db_brain.table_map.items()},
+        "people_search_tables": agent.db_brain.people_search_tables,
         "total_tables_understood": len(agent.db_brain.table_info),
     }
 
