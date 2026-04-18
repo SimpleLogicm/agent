@@ -85,24 +85,13 @@ def create_app() -> FastAPI:
             "database_connected": agent.is_ready,
         }
 
-    # Auto-check Ollama and model
-    print("  Checking AI model...")
-    try:
-        import httpx as _httpx
-        resp = _httpx.get("http://localhost:11434/api/tags", timeout=3)
-        models = [m["name"] for m in resp.json().get("models", [])]
-        if not any(settings.OLLAMA_MODEL in m for m in models):
-            print(f"  Model '{settings.OLLAMA_MODEL}' not found. Downloading...")
-            import subprocess
-            from setup import find_ollama_path
-            ollama_cmd = find_ollama_path() or "ollama"
-            subprocess.run(f"{ollama_cmd} pull {settings.OLLAMA_MODEL}", shell=True)
-            print(f"  [OK] Model ready!")
-        else:
-            print(f"  [OK] Model '{settings.OLLAMA_MODEL}' ready")
-    except Exception as e:
-        print(f"  [WARNING] Ollama check failed: {e}")
-        print("  Make sure Ollama is running. Chat will not work without it.")
+    # Check Gemini AI
+    print("  Checking Gemini AI...")
+    if not settings.GEMINI_API_KEY:
+        print("  [ERROR] No Gemini API key! Get one free at https://aistudio.google.com/apikey")
+        print("  Add GEMINI_API_KEY to your .env file")
+    else:
+        print(f"  [OK] Gemini model: {settings.GEMINI_MODEL}")
 
     # Auto-connect database if configured
     db_connected = False
@@ -151,7 +140,7 @@ if __name__ == "__main__":
     print(f"  Server:     http://localhost:{settings.AGENT_PORT}")
     print(f"  Chat:       http://localhost:{settings.AGENT_PORT}/chat")
     print(f"  API Docs:   http://localhost:{settings.AGENT_PORT}/docs")
-    print(f"  Model:      {settings.OLLAMA_MODEL}")
+    print(f"  Model:      {settings.GEMINI_MODEL} (Gemini)")
     print(f"  Database:   {'Connected' if app.state.db_connected else 'Not connected'}")
     print(f"  Privacy:    100% local - no data leaves this machine")
     print("=" * 60)

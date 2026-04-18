@@ -2,6 +2,7 @@
 echo.
 echo ============================================================
 echo   AI Agent SDK - Windows Installer
+echo   Just enter your keys - no AI model download needed!
 echo ============================================================
 echo.
 
@@ -18,10 +19,5 @@ echo Installing dependencies...
 pip install -r requirements.txt -q
 echo [OK] Dependencies installed
 
-echo.
-echo ============================================================
-echo   Enter your keys and database details below.
-echo   Everything else is automatic.
-echo ============================================================
 echo.
 python setup.py %*

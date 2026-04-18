@@ -3,8 +3,8 @@ set -e
 
 echo ""
 echo "============================================================"
-echo "  AI Agent SDK - One Command Installer"
-echo "  Installs everything and starts the agent."
+echo "  AI Agent SDK - Installer"
+echo "  Just enter your keys - no AI model download needed!"
 echo "============================================================"
 echo ""
 
@@ -19,11 +19,10 @@ else
 fi
 echo "[OK] Found $($PY --version 2>&1)"
 
-# Install dependencies
+# Install dependencies (much lighter - no Ollama!)
 echo "Installing dependencies..."
 $PY -m pip install -r requirements.txt --quiet 2>/dev/null || $PY -m pip install -r requirements.txt
 echo "[OK] Dependencies installed"
 
-# Run setup (handles: license + DB config + Ollama + model + auto-starts agent)
 echo ""
 $PY setup.py "$@" < /dev/tty
