@@ -13,7 +13,7 @@ class Settings:
 
     # Gemini AI (free API from Google)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
     # Safety settings
     READ_ONLY_MODE: bool = os.getenv("READ_ONLY_MODE", "false").lower() == "true"

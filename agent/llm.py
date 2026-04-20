@@ -16,7 +16,11 @@ def _get_gemini():
     if _gemini_client is None:
         try:
             from google import genai
-            _gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            from google.genai import types as genai_types
+            _gemini_client = genai.Client(
+                api_key=settings.GEMINI_API_KEY,
+                http_options=genai_types.HttpOptions(api_version="v1"),
+            )
         except ImportError:
             raise Exception("google-genai not installed. Run: pip install google-genai")
     return _gemini_client

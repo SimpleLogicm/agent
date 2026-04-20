@@ -140,7 +140,7 @@ API_KEY={api_key}
 
 # Gemini AI (get free from https://aistudio.google.com/apikey)
 GEMINI_API_KEY={gemini_key}
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-2.0-flash
 
 # Database
 DB_TYPE={db_type}
@@ -169,7 +169,7 @@ BLOCKED_TABLES=
             from google import genai
             client = genai.Client(api_key=gemini_key)
             resp = client.models.generate_content(
-                model="gemini-1.5-flash",
+                model="gemini-2.0-flash",
                 contents="Say OK if you can read this.",
             )
             if resp.text:
