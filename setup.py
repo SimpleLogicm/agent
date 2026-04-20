@@ -140,7 +140,7 @@ API_KEY={api_key}
 
 # Gemini AI (get free from https://aistudio.google.com/apikey)
 GEMINI_API_KEY={gemini_key}
-GEMINI_MODEL=gemini-2.0-flash-exp
+GEMINI_MODEL=gemini-1.5-flash
 
 # Database
 DB_TYPE={db_type}
@@ -168,7 +168,7 @@ BLOCKED_TABLES=
         try:
             import google.generativeai as genai
             genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-2.0-flash-exp")
+            model = genai.GenerativeModel("gemini-1.5-flash")
             resp = model.generate_content("Say 'OK' if you can read this.")
             if resp.text:
                 print(f"  [OK] Gemini AI working!")
