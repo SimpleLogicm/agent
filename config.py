@@ -11,9 +11,16 @@ class Settings:
     PROJECT_KEY: str = os.getenv("PROJECT_KEY", "")
     API_KEY: str = os.getenv("API_KEY", "")
 
-    # Gemini AI (free API from Google)
+    # LLM Provider: gemini, groq, or auto (tries gemini first, falls back to groq)
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "auto")
+
+    # Gemini AI (free from https://aistudio.google.com/apikey)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+    # Groq (free from https://console.groq.com/keys) - backup if Gemini quota hits
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
     # Safety settings
     READ_ONLY_MODE: bool = os.getenv("READ_ONLY_MODE", "false").lower() == "true"
