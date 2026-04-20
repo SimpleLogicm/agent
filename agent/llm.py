@@ -1,6 +1,6 @@
 """
 LLM Provider - Google Gemini (free, fast, 1M context).
-Only question + schema is sent to Gemini. Data results also go for answer generation.
+Uses the new google-genai SDK which supports v1 API.
 """
 
 import logging
@@ -8,19 +8,18 @@ from config import settings
 
 logger = logging.getLogger("agent")
 
-_gemini_model = None
+_gemini_client = None
 
 
 def _get_gemini():
-    global _gemini_model
-    if _gemini_model is None:
+    global _gemini_client
+    if _gemini_client is None:
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            _gemini_model = genai.GenerativeModel(settings.GEMINI_MODEL)
+            from google import genai
+            _gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         except ImportError:
-            raise Exception("google-generativeai not installed. Run: pip install google-generativeai")
-    return _gemini_model
+            raise Exception("google-genai not installed. Run: pip install google-genai")
+    return _gemini_client
 
 
 def chat(prompt: str, temperature: float = 0.1) -> str:
@@ -29,11 +28,12 @@ def chat(prompt: str, temperature: float = 0.1) -> str:
         raise Exception("GEMINI_API_KEY not set. Get a free key at https://aistudio.google.com/apikey")
 
     try:
-        import google.generativeai as genai
-        model = _get_gemini()
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
+        from google.genai import types
+        client = _get_gemini()
+        response = client.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
                 temperature=temperature,
                 max_output_tokens=2000,
             ),

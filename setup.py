@@ -166,10 +166,12 @@ BLOCKED_TABLES=
     if gemini_key:
         print("\n  Testing Gemini AI...")
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            resp = model.generate_content("Say 'OK' if you can read this.")
+            from google import genai
+            client = genai.Client(api_key=gemini_key)
+            resp = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents="Say OK if you can read this.",
+            )
             if resp.text:
                 print(f"  [OK] Gemini AI working!")
         except Exception as e:
